@@ -1,24 +1,23 @@
-import dataclasses
-import mido
+import asyncio
 import contextlib
-import threading
 import time
-from functools import partial
-import queue
-from typing import Any
 from dataclasses import dataclass
+from functools import partial
+from typing import Set
+
+import mido
 
 
 @dataclass
 class ClipNote:
-    midi_msg: Any
+    midi_msg: mido.Message
     note_time_in_clip_s: float
 
 
 @dataclass
-class PlaybackTask:
-    notes: list[ClipNote]
-    playback_starttime_s: float
+class IncomingMidi:
+    midi_msg: mido.Message
+    port: str
 
 
 class Sequencer:
@@ -48,109 +47,187 @@ class Sequencer:
 
         print(f'Note recorded {note}')
 
-    def start_playback(self) -> PlaybackTask:
+    async def start_playback(self):
         print('Start playback')
 
         playback_starttime_s = time.time()
 
-        playback_notes: list[ClipNote] = []
+        for note in self.notes:
+            next_note_playback_time_s = note.note_time_in_clip_s + playback_starttime_s
 
-        for recorded in self.notes:
-            # playback_time_s = playback_starttime_s + recorded.note_time_in_clip_s - recorded.clip_starttime_s
-            playback_note = dataclasses.replace(recorded)
-            playback_notes.append(playback_note)
+            curr_time = time.time()
 
-        return PlaybackTask(notes=playback_notes,
-                            playback_starttime_s=playback_starttime_s)
+            if next_note_playback_time_s > curr_time:
+                sleep_time_s = next_note_playback_time_s - curr_time
+                print(f'Sleeping for {sleep_time_s}')
+                await asyncio.sleep(sleep_time_s)
 
+            print(f'Sending note {note.midi_msg}')
 
-sequencer = Sequencer()
-playback_q: queue.Queue[PlaybackTask] = queue.Queue()
-
-
-def on_input_midi(msg, port: str, output_synth_port):
-    print(msg, port)
-
-    if port == 'Launchpad Pro Standalone Port' and msg.note == 81 and msg.type == 'note_on' and msg.velocity > 0:
-        if sequencer.is_recording_started():
-            sequencer.stop_recording()
-
-            notes = sequencer.start_playback()
-            playback_q.put_nowait(notes)
-        else:
-            sequencer.start_recording()
-
-    elif port == 'Arturia KeyStep 32':
-        if sequencer.is_recording_started():
-            sequencer.record_note(msg)
-
-        output_synth_port.send(msg)
+            yield note.midi_msg
 
 
-def sending_task(stop_event, output_synth_port):
-    while not stop_event.is_set():
-        try:
-            playback_task = playback_q.get(timeout=0.1)
+class Events:
+    def __init__(self, incoming_midi_q: asyncio.Queue[IncomingMidi]) -> None:
+        self._incoming_midi_q = incoming_midi_q
+        self._midi_in_waiting_futures: Set[asyncio.Future] = set()
 
-            for note in playback_task.notes:
-                next_note_playback_time_s = note.note_time_in_clip_s + playback_task.playback_starttime_s
+    async def wait_for_midi_in(self) -> IncomingMidi:
+        """
+        Block until you get a midi message from any port.
+        """
 
-                curr_time = time.time()
+        f = asyncio.get_running_loop().create_future()
 
-                if next_note_playback_time_s > curr_time:
-                    sleep_time_s = next_note_playback_time_s - curr_time
-                    print(f'Sleeping for {sleep_time_s}')
-                    time.sleep(sleep_time_s)
+        self._midi_in_waiting_futures.add(f)
 
-                print(f'Sending note {note.midi_msg}')
+        print('wait for midi in...')
 
-                output_synth_port.send(note.midi_msg)
+        return await f
 
-        except (queue.Full, queue.Empty):
-            pass
+    async def run(self):
+        while True:
+            incoming_midi = await self._incoming_midi_q.get()
+            print('incoming midi in events task')
+
+            for f in self._midi_in_waiting_futures:
+                f.set_result(incoming_midi)
+                print('notify some waiter')
+
+            self._midi_in_waiting_futures.clear()
 
 
-if __name__ == '__main__':
-    print(mido.get_input_names())
+async def clock_generator(output_port):
+    while True:
+        await asyncio.sleep(0.4)
+        print('output clock')
+        output_port.send(mido.Message('clock'))
 
-    sending_thread_stop_event = threading.Event()
 
+async def note_generator(output_port):
+    while True:
+        print('output note')
+        output_port.send(mido.Message('note_on', channel=0, note=57, velocity=90))
+        await asyncio.sleep(0.5)
+        output_port.send(mido.Message('note_off', channel=0, note=57, velocity=64))
+
+        await asyncio.sleep(0.5)
+
+
+async def monitoring_generator(events: Events, output_synth_port):
+    while True:
+        incoming_midi = await events.wait_for_midi_in()
+
+        if incoming_midi.port != 'Arturia KeyStep 32':
+            continue
+
+        if incoming_midi.midi_msg.type == 'note_on' or incoming_midi.midi_msg.type == 'note_off':
+            print(f'monitoring sending {incoming_midi}')
+
+            output_synth_port.send(incoming_midi.midi_msg)
+
+
+async def sequencer_generator(events: Events, output_synth_port):
+    sequencer = Sequencer()
+
+    while True:
+        incoming_midi = await events.wait_for_midi_in()
+
+        if incoming_midi.port == 'Launchpad Pro Standalone Port' and \
+                incoming_midi.midi_msg.type == 'note_on' and \
+                incoming_midi.midi_msg.note == 81 and \
+                incoming_midi.midi_msg.velocity > 0:
+
+            if sequencer.is_recording_started():
+                sequencer.stop_recording()
+
+                async for midi_msg in sequencer.start_playback():
+                    output_synth_port.send(midi_msg)
+
+            else:
+                sequencer.start_recording()
+
+        if incoming_midi.port == 'Arturia KeyStep 32':
+            if sequencer.is_recording_started():
+                sequencer.record_note(incoming_midi.midi_msg)
+
+
+async def run_generators():
     try:
+        incoming_midi_q: asyncio.Queue[IncomingMidi] = asyncio.Queue()
+
         with contextlib.ExitStack() as stack:
             output_synth_port = mido.open_output(
                 'Neutron(1)',
                 callback=partial(on_input_midi,
                                  port='Neutron(1)',
-                                 output_synth_port=None))
+                                 output_synth_port=None,
+                                 asyncio_loop=asyncio.get_running_loop(),
+                                 incoming_midi_q=incoming_midi_q,
+                                 ))
 
             input_controller_port = mido.open_input(
                 'Launchpad Pro Standalone Port',
                 callback=partial(on_input_midi,
                                  port='Launchpad Pro Standalone Port',
-                                 output_synth_port=output_synth_port))
+                                 output_synth_port=output_synth_port,
+                                 asyncio_loop=asyncio.get_running_loop(),
+                                 incoming_midi_q=incoming_midi_q,
+                                 ))
 
             input_keyboard_port = mido.open_input(
                 'Arturia KeyStep 32',
                 callback=partial(on_input_midi,
                                  port='Arturia KeyStep 32',
-                                 output_synth_port=output_synth_port))
+                                 output_synth_port=output_synth_port,
+                                 asyncio_loop=asyncio.get_running_loop(),
+                                 incoming_midi_q=incoming_midi_q,
+                                 ))
 
-            sending_thread = threading.Thread(target=sending_task, args=(
-                sending_thread_stop_event, output_synth_port))
-
-            sending_thread.start()
+            input_sync_port = mido.open_input(
+                'TR-6S',
+                callback=partial(on_input_midi,
+                                 port='TR-6S',
+                                 output_synth_port=None,
+                                 asyncio_loop=asyncio.get_running_loop(),
+                                 incoming_midi_q=incoming_midi_q,
+                                 ))
 
             stack.enter_context(input_controller_port)
             stack.enter_context(input_keyboard_port)
+            stack.enter_context(input_sync_port)
             stack.enter_context(output_synth_port)
 
-            time.sleep(1000)
+            events = Events(incoming_midi_q=incoming_midi_q)
+
+            tasks = [
+                asyncio.create_task(note_generator(output_synth_port)),
+                asyncio.create_task(monitoring_generator(events, output_synth_port)),
+                asyncio.create_task(sequencer_generator(events, output_synth_port)),
+                asyncio.create_task(clock_generator(output_synth_port)),
+                asyncio.create_task(events.run()),
+            ]
+
+            # TODO proper exit and cancellation
+            await asyncio.wait_for(asyncio.gather(*tasks), timeout=10)
     except KeyboardInterrupt:
         print('interrupted')
 
-    sending_thread_stop_event.set()
-    sending_thread.join()
+
+def on_input_midi(msg, port: str, output_synth_port, asyncio_loop, incoming_midi_q):
+    print(msg, port)
+
+    asyncio_loop.call_soon_threadsafe(incoming_midi_q.put_nowait,
+                                      IncomingMidi(midi_msg=msg, port=port))
+
+
+if __name__ == '__main__':
+    print(mido.get_input_names())
+
+    asyncio.run(run_generators())
+
 
 # ['Launchpad Pro Live Port', 'Launchpad Pro Standalone Port', 'Launchpad Pro MIDI Port',
-#  'Neutron(1)', 'PS60 KEYBOARD', 'Arturia KeyStep 32', 'Launchpad Pro Live Port',
-#  'Launchpad Pro Standalone Port', 'Launchpad Pro MIDI Port', 'Neutron(1)', 'Arturia KeyStep 32']
+#  'Neutron(1)', 'PS60 KEYBOARD', 'Arturia KeyStep 32', 'TR-6S', 'TR-6S CTRL',
+#  'Launchpad Pro Live Port', 'Launchpad Pro Standalone Port', 'Launchpad Pro MIDI Port',
+#  'Neutron(1)', 'Arturia KeyStep 32', 'TR-6S', 'TR-6S CTRL']
