@@ -1,6 +1,5 @@
 import asyncio
 import contextlib
-from optparse import Option
 import time
 from dataclasses import dataclass
 from functools import partial
@@ -12,7 +11,10 @@ import mido
 @dataclass
 class ClipNote:
     midi_msg: mido.Message
-    note_time_in_clip_s: float
+
+    """clip_tick == 0 on the clip start
+    """
+    clip_tick: int
 
 
 @dataclass
@@ -21,28 +23,121 @@ class IncomingMidi:
     port: str
 
 
-class Sequencer:
+class MidiClock:
+    resolution_ticks_per_beat = 24
+
     def __init__(self) -> None:
-        self.recording_starttime_s = 0
+        """
+        The "last" tick is when tempo changed the last time
+        """
+        self._last_tick_time_ns: Optional[int] = None
+        self._last_tick_count: Optional[int] = None
+        self._last_tick_bpm = 120
+        self._tick_duration_ns: int = int(
+            1000000000 * 60 / self._last_tick_bpm / MidiClock.resolution_ticks_per_beat)
+
+        self._tick_waiters: Set[asyncio.Task] = set()
+
+    def start(self):
+        self._last_tick_time_ns = time.monotonic_ns()
+        self._last_tick_count = 0
+
+    @property
+    def bpm(self) -> float:
+        return self._last_tick_bpm
+
+    @property
+    def curr_tick(self) -> Tuple[int, int]:
+        """
+        Returns (tick count, tick ns time)
+        """
+
+        if self._last_tick_time_ns is None:
+            raise RuntimeError('Clock is not started')
+
+        if self._last_tick_count is None:
+            raise RuntimeError('Clock is not started')
+
+        curr_time_ns = time.monotonic_ns()
+        ticks_passed = (curr_time_ns - self._last_tick_time_ns) // self._tick_duration_ns
+        curr_tick_count = self._last_tick_count + ticks_passed
+        curr_tick_time_ns = self._last_tick_time_ns + ticks_passed * self._tick_duration_ns
+
+        return (curr_tick_count, curr_tick_time_ns)
+
+    def stop(self):
+        self._last_tick_time_ns = None
+        self._last_tick_count = None
+
+    def set_tempo_bpm(self, bpm: float):
+        print(f'Set BPM to {bpm}')
+
+        curr_tick = self.curr_tick
+
+        if curr_tick is not None:
+            self._last_tick_count, self._last_tick_time_ns = curr_tick
+
+        self._last_tick_bpm = bpm
+        self._tick_duration_ns = int(1000000000 * 60 / bpm / MidiClock.resolution_ticks_per_beat)
+
+        for waiting_task in self._tick_waiters:
+            waiting_task.cancel()
+
+    async def wait_for_tick(self, tick: int):
+        # TODO what to do when clock is stopped?
+        assert self._last_tick_count is not None
+        assert self._last_tick_time_ns is not None
+
+        while True:
+            try:
+                if tick <= self.curr_tick[0]:
+                    return
+
+                wait_ns = (tick - self._last_tick_count) * self._tick_duration_ns + \
+                    self._last_tick_time_ns - time.monotonic_ns()
+                wait_s = wait_ns / 1000000000
+
+                print(
+                    f'Wait for {wait_s * 1000} ms for the {tick} tick (resolution = {MidiClock.resolution_ticks_per_beat} ticks per beat)')
+
+                sleep_task = asyncio.create_task(asyncio.sleep(wait_s))
+
+                try:
+                    self._tick_waiters.add(sleep_task)
+                    await sleep_task
+                finally:
+                    self._tick_waiters.remove(sleep_task)
+            except asyncio.CancelledError:
+                print('Wait is no longer valid. Reschedule it')
+
+                # TODO tempo reschedule case vs actual cancellation
+
+                continue
+
+
+class Sequencer:
+    def __init__(self, clock: MidiClock) -> None:
+        self.recording_starttick: int = 0
         self.notes: list[ClipNote] = []
+        self.clock: MidiClock = clock
 
     def start_recording(self):
         print('Start recording')
-        self.recording_starttime_s = time.monotonic()
+        self.recording_starttick, _ = self.clock.curr_tick
         self.notes = []
 
     def stop_recording(self):
         print('Stop recording')
-        self.recording_starttime_s = 0
+        self.recording_starttick = 0
 
     def is_recording_started(self):
-        return self.recording_starttime_s != 0
+        return self.recording_starttick != 0
 
     def record_note(self, msg):
-        assert self.recording_starttime_s != 0
+        assert self.recording_starttick != 0
 
         note = ClipNote(midi_msg=msg,
-                        note_time_in_clip_s=time.monotonic() - self.recording_starttime_s)
+                        clip_tick=self.clock.curr_tick[0] - self.recording_starttick)
 
         self.notes.append(note)
 
@@ -51,25 +146,17 @@ class Sequencer:
     async def start_playback(self):
         print('Start playback')
 
-        playback_starttime_s = time.monotonic()
+        playback_starttick, _ = self.clock.curr_tick
 
         for note in self.notes:
-            next_note_playback_time_s = note.note_time_in_clip_s + playback_starttime_s
-
-            curr_time = time.monotonic()
-
-            if next_note_playback_time_s > curr_time:
-                sleep_time_s = next_note_playback_time_s - curr_time
-                print(f'Sleeping for {sleep_time_s}')
-                await asyncio.sleep(sleep_time_s)
-
+            next_note_tick = playback_starttick + note.clip_tick
+            await self.clock.wait_for_tick(next_note_tick)
             print(f'Sending note {note.midi_msg}')
-
             yield note.midi_msg
 
 
 class Events:
-    def __init__(self, incoming_midi_q: asyncio.Queue[IncomingMidi]) -> None:
+    def __init__(self, incoming_midi_q) -> None:
         self._incoming_midi_q = incoming_midi_q
         self._midi_in_waiting_futures: Set[asyncio.Future] = set()
 
@@ -96,78 +183,6 @@ class Events:
                 # print('notify some waiter')
 
             self._midi_in_waiting_futures.clear()
-
-
-class MidiClock:
-    resolution_ticks_per_beat = 24
-
-    def __init__(self) -> None:
-        self._last_tick_time_ns: Optional[int] = None
-        self._last_tick_count: Optional[int] = None
-        self._last_tick_bpm = 120
-        self._tick_duration_ns: int = int(
-            1000000000 * 60 / self._last_tick_bpm / MidiClock.resolution_ticks_per_beat)
-
-    def start(self):
-        self._last_tick_time_ns = time.monotonic_ns()
-        self._last_tick_count = 0
-
-    @property
-    def bpm(self) -> float:
-        return self._last_tick_bpm
-
-    @property
-    def curr_tick(self) -> Optional[Tuple[int, int]]:
-        """
-        Returns (tick count, tick ns time)
-        """
-
-        if self._last_tick_time_ns is None:
-            return None
-
-        if self._last_tick_count is None:
-            return None
-
-        curr_time_ns = time.monotonic_ns()
-        ticks_passed = (curr_time_ns - self._last_tick_time_ns) // self._tick_duration_ns
-        curr_tick_count = self._last_tick_count + ticks_passed
-        curr_tick_time_ns = self._last_tick_time_ns + ticks_passed * self._tick_duration_ns
-
-        return (curr_tick_count, curr_tick_time_ns)
-
-    def stop(self):
-        self._last_tick_time_ns = None
-        self._last_tick_count = None
-
-    def set_tempo_bpm(self, bpm: float):
-        print(f'Set BPM to {bpm}')
-
-        curr_tick = self.curr_tick
-
-        if curr_tick is not None:
-            self._last_tick_count, self._last_tick_time_ns = curr_tick
-
-        self._last_tick_bpm = bpm
-        self._tick_duration_ns = int(1000000000 * 60 / bpm / MidiClock.resolution_ticks_per_beat)
-        # TODO invalidate all sleeps
-
-    async def wait_for_tick(self, tick: int):
-        # TODO what to do when clock is stopped?
-        assert self._last_tick_count is not None
-        assert self._last_tick_time_ns is not None
-
-        if tick <= self._last_tick_count:
-            # TODO last tick is not current tick
-            return
-
-        wait_ns = (tick - self._last_tick_count) * self._tick_duration_ns + \
-            self._last_tick_time_ns - time.monotonic_ns()
-        wait_s = wait_ns / 1000000000
-
-        print(
-            f'Wait for {wait_s * 1000} ms for the {tick} tick (resolution = {MidiClock.resolution_ticks_per_beat} ticks per beat)')
-
-        await asyncio.sleep(wait_s)
 
 
 async def clock_generator(output_port, midi_clock: MidiClock):
@@ -203,17 +218,17 @@ async def tempo_controller(events: Events, midi_clock: MidiClock):
         if incoming_midi.midi_msg.type == 'control_change' and \
             incoming_midi.midi_msg.control == 70 and \
                 incoming_midi.midi_msg.value == 127:
-            print(f'Increase BPM')
+            print(f'Decrease BPM')
 
-            midi_clock.set_tempo_bpm(midi_clock.bpm + 5)
+            midi_clock.set_tempo_bpm(midi_clock.bpm - 10)
 
 
 async def note_generator(output_port):
     while True:
         print('output note')
-        output_port.send(mido.Message('note_on', channel=0, note=57, velocity=90))
+        output_port.send(mido.Message('note_on', channel=0, note=62, velocity=90))
         await asyncio.sleep(0.5)
-        output_port.send(mido.Message('note_off', channel=0, note=57, velocity=64))
+        output_port.send(mido.Message('note_off', channel=0, note=62, velocity=64))
 
         await asyncio.sleep(0.5)
 
@@ -231,8 +246,9 @@ async def monitoring_generator(events: Events, output_synth_port):
             output_synth_port.send(incoming_midi.midi_msg)
 
 
-async def sequencer_generator(events: Events, output_synth_port):
-    sequencer = Sequencer()
+async def sequencer_generator(events: Events, clock: MidiClock, output_synth_port):
+    # TODO use another clock (not MidiClock) with a higher resolution
+    sequencer = Sequencer(clock)
 
     while True:
         incoming_midi = await events.wait_for_midi_in()
@@ -243,6 +259,7 @@ async def sequencer_generator(events: Events, output_synth_port):
                 incoming_midi.midi_msg.velocity > 0:
 
             if sequencer.is_recording_started():
+                # TODO if note is on, off it forcibly
                 sequencer.stop_recording()
 
                 async for midi_msg in sequencer.start_playback():
@@ -306,22 +323,26 @@ async def run_generators():
             midi_clock = MidiClock()
 
             tasks = [
-                asyncio.create_task(note_generator(output_synth_port)),
+                # asyncio.create_task(note_generator(output_synth_port)),
                 asyncio.create_task(monitoring_generator(events, output_synth_port)),
-                asyncio.create_task(sequencer_generator(events, output_synth_port)),
+                asyncio.create_task(sequencer_generator(events, midi_clock, output_synth_port)),
                 asyncio.create_task(clock_generator(output_synth_port, midi_clock)),
                 asyncio.create_task(tempo_controller(events, midi_clock)),
                 asyncio.create_task(events.run()),
             ]
 
+            # TODO catch exceptions from tasks
             # TODO proper exit and cancellation
-            await asyncio.wait_for(asyncio.gather(*tasks), timeout=10)
+            await asyncio.gather(*tasks)
     except KeyboardInterrupt:
         print('interrupted')
 
 
 def on_input_midi(msg, port: str, output_synth_port, asyncio_loop, incoming_midi_q):
     # print(msg, port)
+
+    # if msg.type != 'note_on' and msg.type != 'note_off':
+    #     return
 
     asyncio_loop.call_soon_threadsafe(incoming_midi_q.put_nowait,
                                       IncomingMidi(midi_msg=msg, port=port))
@@ -330,10 +351,30 @@ def on_input_midi(msg, port: str, output_synth_port, asyncio_loop, incoming_midi
 if __name__ == '__main__':
     print(mido.get_input_names())
 
-    asyncio.run(run_generators())
+    asyncio.run(run_generators(), debug=True)
 
 
 # ['Launchpad Pro Live Port', 'Launchpad Pro Standalone Port', 'Launchpad Pro MIDI Port',
 #  'Neutron(1)', 'PS60 KEYBOARD', 'Arturia KeyStep 32', 'TR-6S', 'TR-6S CTRL',
 #  'Launchpad Pro Live Port', 'Launchpad Pro Standalone Port', 'Launchpad Pro MIDI Port',
 #  'Neutron(1)', 'Arturia KeyStep 32', 'TR-6S', 'TR-6S CTRL']
+
+
+# Arturia KeyStep 32:Arturia KeyStep 32 MIDI 1 24:0
+# Arturia KeyStep 32:Arturia KeyStep 32 MIDI 1 24:0
+# Launchpad Pro:Launchpad Pro MIDI 1 20:0
+# Launchpad Pro:Launchpad Pro MIDI 1 20:0
+# Launchpad Pro:Launchpad Pro MIDI 2 20:1
+# Launchpad Pro:Launchpad Pro MIDI 2 20:1
+# Launchpad Pro:Launchpad Pro MIDI 3 20:2
+# Launchpad Pro:Launchpad Pro MIDI 3 20:2
+# Midi Through:Midi Through Port-0 14:0
+# Midi Through:Midi Through Port-0 14:0
+# Neutron(1):Neutron(1) MIDI 1 16:0
+# Neutron(1):Neutron(1) MIDI 1 16:0
+# PS60:PS60 MIDI 1 28:0
+# PS60:PS60 MIDI 1 28:0
+# TR-6S:TR-6S MIDI 1 32:0
+# TR-6S:TR-6S MIDI 1 32:0
+# TR-6S:TR-6S MIDI 2 32:1
+# TR-6S:TR-6S MIDI 2 32:1
