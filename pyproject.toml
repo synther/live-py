@@ -9,6 +9,8 @@ license = "LGPL-2.1-only"
 python = "^3.8"
 mido = "^1.2.10"
 python-rtmidi = "^1.4.9"
+reactivex = "^4.0.4"
+PyYAML = "^6.0"
 
 [tool.poetry.dev-dependencies]
 autopep8 = "^1.6.0"

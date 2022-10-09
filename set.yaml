@@ -1,0 +1,69 @@
+- page: main
+  active: true
+  widgets:
+  - button: shift_shuffle
+  - button: shift_inc
+    hw: LaunchPad1
+    hw_pos: 3
+  - button: tempo_dec
+    hw: LaunchPad1
+    hw_pos: 1
+  - button: tempo_inc
+    hw: LaunchPad1
+    hw_pos: 2
+  - button: tempo_reset
+
+- page: shuffle
+  active: false
+  widgets:
+  - button: shuffle_dec
+    hw: LaunchPad1
+    hw_pos: 1
+    # bind:
+    # - shuffle_dec.color: heat(clock.shuffle)
+    #   input:
+    #   - clock.shuffle: rx
+  - button: shuffle_inc
+    hw: LaunchPad1
+    hw_pos: 2
+  - button: shuffle_reset
+
+- var: inc
+  value: 1
+  bind:
+    - inc.value: shift_inc.value * 10 + 1
+      input:
+      - shift_inc.value: rx
+    # - inc.value: inc_static.value + 40
+    #   input:
+    # - inc.value: inc_static.value + 40
+    #   input:
+    #   - inc_static.value: static
+
+# - filter: shuffle_inc_dec_pressed
+#   input:
+#   - shuffle_inc.value: rx
+#   - shuffle_dec.value: rx
+#   predicate: shuffle_inc.value == 1 and shuffle_dec.value == 1
+
+# - filter: tempo_inc_dec_pressed
+#   input:
+#   - tempo_inc.value: rx
+#   - tempo_dec.value: rx
+#   predicate: tempo_inc.value == 1 and tempo_dec.value == 1
+
+- clock: clock
+  tempo: 120
+  shuffle: 50
+  bind:
+    - clock.shuffle: 50
+      input:
+      - shuffle_inc_dec_pressed.value: rx
+    # - clock.tempo: 120
+    #   input:
+    #   - tempo_inc_dec_pressed.value: rx
+    - clock.tempo: 120 - inc.value * tempo_dec.value
+      input:
+      # - clock.tempo: static
+      - inc.value: static
+      - tempo_dec.value: rx

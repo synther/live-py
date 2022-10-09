@@ -22,6 +22,32 @@ class IncomingMidi:
     midi_msg: mido.Message
     port: str
 
+class Control:
+    type_name = "base"
+
+    def __init__(self, name: str) -> None:
+        pass
+
+    def trigger(self, value):
+        pass
+
+
+class Button(Control):
+    type_name = "Button"
+
+class Grid(Control):
+    type_name = "Grid"
+
+class Layout:
+    def place_control(self, control, position):
+        """
+        position is control number, range of controls, lower and upper corners. Depends on control
+        """
+        pass
+
+    def trigger_control(self, postion_n, value):
+        pass
+
 
 class MidiClock:
     resolution_ticks_per_beat = 24
