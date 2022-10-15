@@ -10,7 +10,7 @@
       "request": "launch",
       "program": "live_py/yaml-parse.py",
       "console": "integratedTerminal",
-      "justMyCode": true
+      "justMyCode": false
     },
     {
       "name": "live_py package",

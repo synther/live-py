@@ -28,17 +28,27 @@
     hw_pos: 2
   - button: shuffle_reset
 
+- pipeline:
+  - one_shot: 1
+  - out: inc.value
+
+- pipeline:
+  - combine:
+    shift_inc.value: rx
+  - map: shift_inc.value * 10 + 1
+  - out: inc.value
+
 - var: inc
-  value: 1
-  bind:
-    - inc.value: shift_inc.value * 10 + 1
-      input:
-      - shift_inc.value: rx
-    # - inc.value: inc_static.value + 40
-    #   input:
-    # - inc.value: inc_static.value + 40
-    #   input:
-    #   - inc_static.value: static
+
+- pipeline:
+  - one_shot: 120
+  - combine:
+    input: rx
+    inc.value: static
+    tempo_dec.value: static
+  - map: input - inc.value * tempo_dec.value
+  - out: clock.tempo
+
 
 # - filter: shuffle_inc_dec_pressed
 #   input:

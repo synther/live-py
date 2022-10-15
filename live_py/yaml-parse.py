@@ -71,6 +71,7 @@ yaml_classes['filter'] = Filter
 var_in_subjects = {}
 var_out_subjects = {}
 var_obs = {}
+init_values = {}
 
 
 def create_var(var_name):
