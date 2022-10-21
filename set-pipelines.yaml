@@ -1,79 +1,75 @@
 - page: main
   active: true
   widgets:
-  - button: shift_shuffle
-  - button: shift_inc
-    hw: LaunchPad1
-    hw_pos: 3
-  - button: tempo_dec
-    hw: LaunchPad1
-    hw_pos: 1
-  - button: tempo_inc
-    hw: LaunchPad1
-    hw_pos: 2
-  - button: tempo_reset
+    - button: shift_shuffle
+    - button: tempo_dec
+      hw: LaunchPad1
+      hw_pos: 1
+    - button: tempo_inc
+      hw: LaunchPad1
+      hw_pos: 2
+    - button: shift_inc
+      hw: LaunchPad1
+      hw_pos: 3
+    - button: tempo_reset
 
 - page: shuffle
   active: false
   widgets:
-  - button: shuffle_dec
-    hw: LaunchPad1
-    hw_pos: 1
-    # bind:
-    # - shuffle_dec.color: heat(clock.shuffle)
-    #   input:
-    #   - clock.shuffle: rx
-  - button: shuffle_inc
-    hw: LaunchPad1
-    hw_pos: 2
-  - button: shuffle_reset
-
-- pipeline:
-  - one_shot: 1
-  - out: inc.value
-
-- pipeline:
-  - combine:
-    shift_inc.value: rx
-  - map: shift_inc.value * 10 + 1
-  - out: inc.value
+    - button: shuffle_dec
+      hw: LaunchPad1
+      hw_pos: 1
+    - button: shuffle_inc
+      hw: LaunchPad1
+      hw_pos: 2
+    - button: shuffle_reset
 
 - var: inc
 
 - pipeline:
-  - one_shot: 120
-  - combine:
-    input: rx
-    inc.value: static
-    tempo_dec.value: static
-  - map: input - inc.value * tempo_dec.value
-  - out: clock.tempo
+  pipe:
+    - map: shift_inc.value * 9 + 1
+      vars:
+        shift_inc.value: rx
+    - out: inc.value
 
+- pipeline:
+  pipe:
+    - filter: tempo_dec.value > 0
+      vars:
+        tempo_dec.value: rx
+    - map: clock.tempo - inc.value * input[0]
+      vars:
+        input: rx
+        clock.tempo: static
+        inc.value: static
+    - map: input * 1.00001
+      vars:
+        input: rx
+    - out: clock.tempo
 
-# - filter: shuffle_inc_dec_pressed
-#   input:
-#   - shuffle_inc.value: rx
-#   - shuffle_dec.value: rx
-#   predicate: shuffle_inc.value == 1 and shuffle_dec.value == 1
+- pipeline:
+  pipe:
+    - filter: tempo_inc.value > 0
+      vars:
+        tempo_inc.value: rx
+    - map: clock.tempo + inc.value * input[0]
+      vars:
+        input: rx
+        clock.tempo: static
+        inc.value: static
+    - out: clock.tempo
 
-# - filter: tempo_inc_dec_pressed
-#   input:
-#   - tempo_inc.value: rx
-#   - tempo_dec.value: rx
-#   predicate: tempo_inc.value == 1 and tempo_dec.value == 1
+- pipeline:
+  pipe:
+    - one_shot: 120
+    - out: clock.tempo
+
+- pipeline:
+  pipe:
+    - one_shot: 1
+    - out: inc.value
 
 - clock: clock
   tempo: 120
   shuffle: 50
-  bind:
-    - clock.shuffle: 50
-      input:
-      - shuffle_inc_dec_pressed.value: rx
-    # - clock.tempo: 120
-    #   input:
-    #   - tempo_inc_dec_pressed.value: rx
-    - clock.tempo: clock.tempo - inc.value * tempo_dec.value
-      input:
-      - clock.tempo: static
-      - inc.value: static
-      - tempo_dec.value: rx
