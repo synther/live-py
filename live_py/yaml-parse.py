@@ -1,11 +1,14 @@
+import dataclasses
 import logging
 import pprint
+import time
 import uuid
-from typing import Any, Dict, List, Optional, Tuple, Union
+from typing import Any, ClassVar, Dict, List, Optional, Tuple, Union
 
+import mido
 import reactivex
 import yaml
-from reactivex import Observable, abc
+from reactivex import Observable, Subject, abc
 from reactivex import operators as ops
 from reactivex.disposable import (CompositeDisposable,
                                   SingleAssignmentDisposable)
@@ -35,6 +38,16 @@ def new_obj(yaml_obj: dict) -> Optional[object]:
         return None
 
 
+def create_var(var_name):
+    if var_out_subjects.get(var_name, None) is None:
+        logger.debug(f'Create out subject for {var_name}')
+        var_out_subjects[var_name] = reactivex.Subject()
+
+
+def create_pipeline(yaml_obj):
+    pipelines.append(Pipeline(yaml_obj, var_out_subjects))
+
+
 class Page:
     def __init__(self, yaml_obj: dict):
         logger.debug(f'Create Page from {yaml_obj}')
@@ -42,7 +55,18 @@ class Page:
         widgets_iter = (new_obj(w) for w in yaml_obj['widgets'])
         widgets_iter = filter(lambda o: o is not None, widgets_iter)
 
+        self.name = next(iter(yaml_obj.items()))[1]
         self.widgets = list(widgets_iter)
+
+        active = yaml_obj['active']
+        create_var((self.name, 'active'))
+        create_pipeline({
+            'pipe':
+                [
+                    {'one_shot': active},
+                    {'out': f'{self.name}.active'}
+                ]
+        })
 
 
 class Var:
@@ -54,13 +78,13 @@ class Button:
     def __init__(self, yaml: dict):
         logger.debug(f'Create from {yaml}')
         self.name = next(iter(yaml.items()))[1]
-        self.hw = yaml.get('hw', None)
-        self.hw_pos = yaml.get('hw_pos', None)
+        self.device = yaml.get('device', None)
+        self.device_control = yaml.get('device_control', None)
 
     def __repr__(self) -> str:
         return f'Button("{self.name}")'
 
-    def process_hw_message(self, msg: Tuple) -> Tuple:
+    def process_device_message(self, msg: Tuple) -> Tuple:
         """
         Process midi event: (<name>, <value>)
         """
@@ -209,12 +233,6 @@ init_values = {}
 pipelines: List[Pipeline] = []
 
 
-def create_var(var_name):
-    if var_out_subjects.get(var_name, None) is None:
-        logger.debug(f'Create out subject for {var_name}')
-        var_out_subjects[var_name] = reactivex.Subject()
-
-
 def combine_rx(sources: List[Observable[Any]], is_rx: List[bool],
                from_: List[Union[str, tuple[str, str]]]) -> Observable[Tuple[Any, ...]]:
     parent = sources[0]
@@ -238,8 +256,9 @@ def combine_rx(sources: List[Observable[Any]], is_rx: List[bool],
             has_value[i] = True
             nonlocal first_time_all
 
-            logger.debug(f'combine_rx: values {values}, has_value {has_value}, from {from_}')
-            logger.debug(f'combine_rx: on_next: from "{from_[i]}" = {values[i]} (is_rx={is_rx[i]})')
+            logger.debug(
+                f'combine_rx on_next: values {values}, has_value {has_value}, from {from_}')
+            logger.debug(f'                    from "{from_[i]}" = {values[i]} (is_rx={is_rx[i]})')
 
             if all(has_value):
                 if first_time_all or is_rx[i]:
@@ -293,12 +312,14 @@ def activity_manager(yaml_namespace):
     def _operator(source):
         def subscribe(observer, scheduler=None):
             def on_next(value):
-                if value[0] == 'midicc':
-                    _, hw, hw_pos, cc = value
+                logger.debug(f"Activity manager: on_next {value}")
+
+                if value[0] in ('note_on', 'note_off'):
+                    _, device, device_control, cc = value
                     for active_page in active_pages:
                         for w in yaml_namespace[active_page].widgets:
-                            if (hw, hw_pos) == (w.hw, w.hw_pos):
-                                observer.on_next(w.process_hw_message((w.name, cc)))
+                            if (device, device_control) == (w.device, w.device_control):
+                                observer.on_next(w.process_device_message((w.name, cc)))
                                 return
 
                 if value[0] == 'active':
@@ -329,15 +350,54 @@ def route_to_var(msg):
         var_subject.on_next(msg[1])
 
 
+@dataclasses.dataclass
+class DeviceControl:
+    yaml_type: ClassVar[str]
+
+
+@dataclasses.dataclass
+class MidiNoteOnDeviceControl(DeviceControl):
+    yaml_type = 'midi_note_on'
+    midi_input: str
+    midi_channel: int
+    midi_note: int
+
+
+class Device:
+    controls: Dict[int, DeviceControl] = {}
+
+
+devices: Dict[str, Device] = {}
+
+
+def create_device(yaml_obj: Dict, devices: Dict[str, Device]):
+    name = next(iter(yaml_obj.values()))
+    device = Device()
+    devices[name] = device
+
+    for control_id, control_props in yaml_obj['controls'].items():
+        match control_props['type']:
+            case 'midi_note_on':
+                device.controls[control_id] = MidiNoteOnDeviceControl(
+                    midi_input=control_props['input'],
+                    midi_channel=control_props['channel'],
+                    midi_note=control_props['note'],
+                )
+
+
 with open('set-pipelines.yaml', 'r') as stream:
     yaml_data = yaml.safe_load(stream)
+
+    for yaml_obj in yaml_data:
+        if next(iter(yaml_obj)) == 'device':
+            create_device(yaml_obj, devices)
 
     for yaml_obj in yaml_data:
         new_obj(yaml_obj)
 
     for yaml_obj in yaml_data:
-        if 'pipeline' in yaml_obj:
-            pipelines.append(Pipeline(yaml_obj, var_out_subjects))
+        if next(iter(yaml_obj)) == 'pipeline':
+            create_pipeline(yaml_obj)
 
 
 var_out_subjects[('clock', 'tempo')].subscribe(
@@ -350,38 +410,79 @@ for pipeline in pipelines:
         on_completed=lambda: logger.debug(f'pipeline on_completed'),
         on_error=lambda e: logger.debug(f'pipeline error {e}'))
 
+midi_in_subj = Subject()
 
-reactivex.of(
-    ('active', 'main', True),
-    ('midicc', 'LaunchPad1', 1, 127),  # tempo dec
-    ('midicc', 'LaunchPad1', 1, 0),
-    ('midicc', 'LaunchPad1', 2, 127),  # tempo inc
-    ('midicc', 'LaunchPad1', 2, 0),
-    ('midicc', 'LaunchPad1', 3, 127),  # shift x10 pressed
-    ('midicc', 'LaunchPad1', 1, 127),  # tempo dec
-    ('midicc', 'LaunchPad1', 1, 0),
-    ('midicc', 'LaunchPad1', 1, 127),  # tempo dec
-    ('midicc', 'LaunchPad1', 1, 0),
-    ('midicc', 'LaunchPad1', 2, 127),  # tempo inc
-    ('midicc', 'LaunchPad1', 2, 0),
-    ('midicc', 'LaunchPad1', 3, 0),  # shift x10 released
-    ('midicc', 'LaunchPad1', 2, 127),  # tempo inc
-    ('midicc', 'LaunchPad1', 2, 0),
-    # ('active', 'shuffle', True),
+print(mido.get_input_names())
 
-    # ('midicc', 'LaunchPad1', 2, 127),
-    # ('midicc', 'LaunchPad1', 2, 0),
 
-    # ('active', 'shuffle', False),
+def on_midi_in(msg):
+    logger.debug(f"midi msg: {msg}")
 
-    # ('midicc', 'LaunchPad1', 2, 127),
-    # ('midicc', 'LaunchPad1', 2, 0),
+    if msg.type in ('note_on', 'note_off'):
+        midi_in_subj.on_next(msg)
 
-    # ('midicc', 'LaunchPad2', 2, 0),
-    # ('midicc', 'LaunchPad2', 2, 0),
-    # ('midicc', 'LaunchPad2', 1, 0),
 
-).pipe(
+def midi_in_to_device_event(midi_msg):
+    if midi_msg.type == 'note_on':
+        for control_id, control in devices['Launch Control'].controls.items():
+            if isinstance(control, MidiNoteOnDeviceControl) and \
+                    control.midi_input == 'Launch Control' and \
+                control.midi_channel == midi_msg.channel and \
+                    control.midi_note == midi_msg.note:
+
+                m = ('note_on', 'Launch Control', control_id, 1)
+
+                logger.debug(f"Found device control: {m}")
+
+                return m
+
+    logger.debug("Not found device control")
+
+    return ('dummy', 'Device', 0, 0)
+
+
+input_midi_port = mido.open_input('Launch Control', callback=on_midi_in)
+
+# TODO send ('active', 'main', True) first to Activity Manager
+
+print(input_midi_port)
+
+# midi_in = reactivex.of(
+#     ('active', 'main', True),
+#     ('midicc', 'LaunchPad1', 1, 127),  # tempo dec
+#     ('midicc', 'LaunchPad1', 1, 0),
+#     ('midicc', 'LaunchPad1', 2, 127),  # tempo inc
+#     ('midicc', 'LaunchPad1', 2, 0),
+#     ('midicc', 'LaunchPad1', 3, 127),  # shift x10 pressed
+#     ('midicc', 'LaunchPad1', 1, 127),  # tempo dec
+#     ('midicc', 'LaunchPad1', 1, 0),
+#     ('midicc', 'LaunchPad1', 1, 127),  # tempo dec
+#     ('midicc', 'LaunchPad1', 1, 0),
+#     ('midicc', 'LaunchPad1', 2, 127),  # tempo inc
+#     ('midicc', 'LaunchPad1', 2, 0),
+#     ('midicc', 'LaunchPad1', 3, 0),  # shift x10 released
+#     ('midicc', 'LaunchPad1', 2, 127),  # tempo inc
+#     ('midicc', 'LaunchPad1', 2, 0),
+#     # ('active', 'shuffle', True),
+
+#     # ('midicc', 'LaunchPad1', 2, 127),
+#     # ('midicc', 'LaunchPad1', 2, 0),
+
+#     # ('active', 'shuffle', False),
+
+#     # ('midicc', 'LaunchPad1', 2, 127),
+#     # ('midicc', 'LaunchPad1', 2, 0),
+
+#     # ('midicc', 'LaunchPad2', 2, 0),
+#     # ('midicc', 'LaunchPad2', 2, 0),
+#     # ('midicc', 'LaunchPad2', 1, 0),
+# )
+
+midi_in = midi_in_subj.pipe(
+    ops.map(midi_in_to_device_event)
+)
+
+midi_in.pipe(
     activity_manager(
         yaml_namespace
     ),
@@ -393,3 +494,5 @@ reactivex.of(
         on_next=route_to_var
     ),
 ).subscribe()
+
+time.sleep(100)

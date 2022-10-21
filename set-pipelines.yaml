@@ -1,27 +1,46 @@
+- device: Launch Control
+  controls:
+    1:
+      type: midi_note_on
+      input: Launch Control
+      channel: 2
+      note: 9
+    2:
+      type: midi_note_on
+      input: Launch Control
+      channel: 2
+      note: 10
+    3:
+      type: midi_note_on
+      input: Launch Control
+      channel: 2
+      note: 11
+
 - page: main
   active: true
   widgets:
     - button: shift_shuffle
-    - button: tempo_dec
-      hw: LaunchPad1
-      hw_pos: 1
-    - button: tempo_inc
-      hw: LaunchPad1
-      hw_pos: 2
-    - button: shift_inc
-      hw: LaunchPad1
-      hw_pos: 3
     - button: tempo_reset
+
+    - button: tempo_dec
+      device: Launch Control
+      device_control: 1
+    - button: tempo_inc
+      device: Launch Control
+      device_control: 2
+    - button: shift_inc
+      device: Launch Control
+      device_control: 3
 
 - page: shuffle
   active: false
   widgets:
     - button: shuffle_dec
-      hw: LaunchPad1
-      hw_pos: 1
+      device: Launch Control
+      device_control: 1
     - button: shuffle_inc
-      hw: LaunchPad1
-      hw_pos: 2
+      device: Launch Control
+      device_control: 2
     - button: shuffle_reset
 
 - var: inc
