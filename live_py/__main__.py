@@ -1,406 +1,158 @@
-import asyncio
-import contextlib
+import logging
+import pprint
 import time
-from dataclasses import dataclass
-from functools import partial
-from typing import Set, Optional, Tuple
 
+import coloredlogs
 import mido
+import yaml
+from reactivex import Subject
+from reactivex import operators as ops
+import reactivex
 
+from . import (yaml_device_controls, yaml_devices, yaml_namespace,
+               yaml_pipelines)
+from .base import DeviceControlEvent
+from .yaml_elements import WidgetControl
+from .activity_manager import activity_manager
 
-@dataclass
-class ClipNote:
-    midi_msg: mido.Message
+pp = pprint.PrettyPrinter(indent=4)
 
-    """clip_tick == 0 on the clip start
-    """
-    clip_tick: int
 
+logger = logging.getLogger(__name__)
+logging.basicConfig(level=logging.DEBUG)
 
-@dataclass
-class IncomingMidi:
-    midi_msg: mido.Message
-    port: str
+coloredlogs.install(level='DEBUG',
+                    fmt='%(asctime)s,%(msecs)03d %(name)22s %(levelname)5s %(message)s')
 
-class Control:
-    type_name = "base"
 
-    def __init__(self, name: str) -> None:
-        pass
+def route_to_var(msg):
+    var_subject = yaml_pipelines.get_var_subject(msg[0])
 
-    def trigger(self, value):
-        pass
+    if var_subject is not None:
+        logger.debug(f'route {msg[1]} to {msg[0]}')
+        var_subject.on_next(msg[1])
 
+# def device_control_event_to_widget_event(device_control_event: DeviceControlEvent,
+#                                          widget: WidgetControl):
+#     widget_event = widget.map_device_control_event(device_control_event)
 
-class Button(Control):
-    type_name = "Button"
+#     if widget_event:
+#         reactivex.just()
 
-class Grid(Control):
-    type_name = "Grid"
+with open('set-pipelines.yaml', 'r') as stream:
+    yaml_data = yaml.safe_load(stream)
 
-class Layout:
-    def place_control(self, control, position):
-        """
-        position is control number, range of controls, lower and upper corners. Depends on control
-        """
-        pass
+    for yaml_obj in yaml_data:
+        if next(iter(yaml_obj)) == 'device':
+            yaml_devices.create_device(yaml_obj)
 
-    def trigger_control(self, postion_n, value):
-        pass
+    for yaml_obj in yaml_data:
+        yaml_namespace.new_obj(yaml_obj)
 
+    for yaml_obj in yaml_data:
+        if next(iter(yaml_obj)) == 'pipeline':
+            yaml_pipelines.create_pipeline(yaml_obj)
 
-class MidiClock:
-    resolution_ticks_per_beat = 24
 
-    def __init__(self) -> None:
-        """
-        The "last" tick is when tempo changed the last time
-        """
-        self._last_tick_time_ns: Optional[int] = None
-        self._last_tick_count: Optional[int] = None
-        self._last_tick_bpm = 120
-        self._tick_duration_ns: int = int(
-            1000000000 * 60 / self._last_tick_bpm / MidiClock.resolution_ticks_per_beat)
+midi_in_subj = Subject()
 
-        self._tick_waiters: Set[asyncio.Task] = set()
+print(mido.get_input_names())
 
-    def start(self):
-        self._last_tick_time_ns = time.monotonic_ns()
-        self._last_tick_count = 0
 
-    @property
-    def bpm(self) -> float:
-        return self._last_tick_bpm
+def on_midi_in(msg):
+    logger.debug(f"midi msg: {msg}")
 
-    @property
-    def curr_tick(self) -> Tuple[int, int]:
-        """
-        Returns (tick count, tick ns time)
-        """
+    if msg.type in ('note_on', 'note_off'):
+        midi_in_subj.on_next(msg)
 
-        if self._last_tick_time_ns is None:
-            raise RuntimeError('Clock is not started')
 
-        if self._last_tick_count is None:
-            raise RuntimeError('Clock is not started')
+def midi_in_to_device_event(midi_msg):
+    if midi_msg.type in ('note_on', 'note_off'):
+        for control in yaml_devices.get_controls('Launch Control'):
+            if isinstance(control, yaml_device_controls.MidiNoteDeviceControl) and \
+                    control.midi_input == 'Launch Control' and \
+                control.midi_channel == midi_msg.channel and \
+                    control.midi_note == midi_msg.note:
 
-        curr_time_ns = time.monotonic_ns()
-        ticks_passed = (curr_time_ns - self._last_tick_time_ns) // self._tick_duration_ns
-        curr_tick_count = self._last_tick_count + ticks_passed
-        curr_tick_time_ns = self._last_tick_time_ns + ticks_passed * self._tick_duration_ns
+                m = control.midi_to_device_event(midi_msg)
 
-        return (curr_tick_count, curr_tick_time_ns)
+                logger.debug(f"Found device control: {m}")
 
-    def stop(self):
-        self._last_tick_time_ns = None
-        self._last_tick_count = None
+                # TODO one control id - multiple DeviceControls
 
-    def set_tempo_bpm(self, bpm: float):
-        print(f'Set BPM to {bpm}')
+                # TODO return multiple device events
+                # TODO return none device events
 
-        curr_tick = self.curr_tick
+                return m
 
-        if curr_tick is not None:
-            self._last_tick_count, self._last_tick_time_ns = curr_tick
+    logger.debug(f"Not found device control, {midi_msg=}")
 
-        self._last_tick_bpm = bpm
-        self._tick_duration_ns = int(1000000000 * 60 / bpm / MidiClock.resolution_ticks_per_beat)
+    return ('dummy', 'Device', 0, 0)
 
-        for waiting_task in self._tick_waiters:
-            waiting_task.cancel()
 
-    async def wait_for_tick(self, tick: int):
-        # TODO what to do when clock is stopped?
-        assert self._last_tick_count is not None
-        assert self._last_tick_time_ns is not None
+input_midi_port = mido.open_input('Launch Control', callback=on_midi_in)
 
-        while True:
-            try:
-                if tick <= self.curr_tick[0]:
-                    return
+# TODO send ('active', 'main', True) first to Activity Manager
 
-                wait_ns = (tick - self._last_tick_count) * self._tick_duration_ns + \
-                    self._last_tick_time_ns - time.monotonic_ns()
-                wait_s = wait_ns / 1000000000
+print(input_midi_port)
 
-                print(
-                    f'Wait for {wait_s * 1000} ms for the {tick} tick (resolution = {MidiClock.resolution_ticks_per_beat} ticks per beat)')
-
-                sleep_task = asyncio.create_task(asyncio.sleep(wait_s))
-
-                try:
-                    self._tick_waiters.add(sleep_task)
-                    await sleep_task
-                finally:
-                    self._tick_waiters.remove(sleep_task)
-            except asyncio.CancelledError:
-                print('Wait is no longer valid. Reschedule it')
-
-                # TODO tempo reschedule case vs actual cancellation
-
-                continue
-
-
-class Sequencer:
-    def __init__(self, clock: MidiClock) -> None:
-        self.recording_starttick: int = 0
-        self.notes: list[ClipNote] = []
-        self.clock: MidiClock = clock
-
-    def start_recording(self):
-        print('Start recording')
-        self.recording_starttick, _ = self.clock.curr_tick
-        self.notes = []
-
-    def stop_recording(self):
-        print('Stop recording')
-        self.recording_starttick = 0
-
-    def is_recording_started(self):
-        return self.recording_starttick != 0
-
-    def record_note(self, msg):
-        assert self.recording_starttick != 0
-
-        note = ClipNote(midi_msg=msg,
-                        clip_tick=self.clock.curr_tick[0] - self.recording_starttick)
-
-        self.notes.append(note)
-
-        print(f'Note recorded {note}')
-
-    async def start_playback(self):
-        print('Start playback')
-
-        playback_starttick, _ = self.clock.curr_tick
-
-        for note in self.notes:
-            next_note_tick = playback_starttick + note.clip_tick
-            await self.clock.wait_for_tick(next_note_tick)
-            print(f'Sending note {note.midi_msg}')
-            yield note.midi_msg
-
-
-class Events:
-    def __init__(self, incoming_midi_q) -> None:
-        self._incoming_midi_q = incoming_midi_q
-        self._midi_in_waiting_futures: Set[asyncio.Future] = set()
-
-    async def wait_for_midi_in(self) -> IncomingMidi:
-        """
-        Block until you get a midi message from any port.
-        """
-
-        f = asyncio.get_running_loop().create_future()
-
-        self._midi_in_waiting_futures.add(f)
-
-        # print('wait for midi in...')
-
-        return await f
-
-    async def run(self):
-        while True:
-            incoming_midi = await self._incoming_midi_q.get()
-            # print('incoming midi in events task')
-
-            for f in self._midi_in_waiting_futures:
-                f.set_result(incoming_midi)
-                # print('notify some waiter')
-
-            self._midi_in_waiting_futures.clear()
-
-
-async def clock_generator(output_port, midi_clock: MidiClock):
-    midi_clock.start()
-
-    last_tick_sent: Optional[int] = None
-
-    while True:
-        if last_tick_sent is None:
-            curr_tick = midi_clock.curr_tick
-
-            # TODO what to do when clock is stopped?
-            assert curr_tick is not None
-
-            tick_to_send, _ = curr_tick
-        else:
-            tick_to_send = last_tick_sent + 1
-
-        await midi_clock.wait_for_tick(tick_to_send)
-        print('output clock')
-        output_port.send(mido.Message('clock'))
-
-        last_tick_sent = tick_to_send
-
-
-async def tempo_controller(events: Events, midi_clock: MidiClock):
-    while True:
-        incoming_midi = await events.wait_for_midi_in()
-
-        if incoming_midi.port != 'Launchpad Pro Standalone Port':
-            continue
-
-        if incoming_midi.midi_msg.type == 'control_change' and \
-            incoming_midi.midi_msg.control == 70 and \
-                incoming_midi.midi_msg.value == 127:
-            print(f'Decrease BPM')
-
-            midi_clock.set_tempo_bpm(midi_clock.bpm - 10)
-
-
-async def note_generator(output_port):
-    while True:
-        print('output note')
-        output_port.send(mido.Message('note_on', channel=0, note=62, velocity=90))
-        await asyncio.sleep(0.5)
-        output_port.send(mido.Message('note_off', channel=0, note=62, velocity=64))
-
-        await asyncio.sleep(0.5)
-
-
-async def monitoring_generator(events: Events, output_synth_port):
-    while True:
-        incoming_midi = await events.wait_for_midi_in()
-
-        if incoming_midi.port != 'Arturia KeyStep 32':
-            continue
-
-        if incoming_midi.midi_msg.type == 'note_on' or incoming_midi.midi_msg.type == 'note_off':
-            print(f'monitoring sending {incoming_midi}')
-
-            output_synth_port.send(incoming_midi.midi_msg)
-
-
-async def sequencer_generator(events: Events, clock: MidiClock, output_synth_port):
-    # TODO use another clock (not MidiClock) with a higher resolution
-    sequencer = Sequencer(clock)
-
-    while True:
-        incoming_midi = await events.wait_for_midi_in()
-
-        if incoming_midi.port == 'Launchpad Pro Standalone Port' and \
-                incoming_midi.midi_msg.type == 'note_on' and \
-                incoming_midi.midi_msg.note == 81 and \
-                incoming_midi.midi_msg.velocity > 0:
-
-            if sequencer.is_recording_started():
-                # TODO if note is on, off it forcibly
-                sequencer.stop_recording()
-
-                async for midi_msg in sequencer.start_playback():
-                    output_synth_port.send(midi_msg)
-
-            else:
-                sequencer.start_recording()
-
-        if incoming_midi.port == 'Arturia KeyStep 32':
-            if sequencer.is_recording_started():
-                sequencer.record_note(incoming_midi.midi_msg)
-
-
-async def run_generators():
-    try:
-        incoming_midi_q: asyncio.Queue[IncomingMidi] = asyncio.Queue()
-
-        with contextlib.ExitStack() as stack:
-            output_synth_port = mido.open_output(
-                'Neutron(1)',
-                callback=partial(on_input_midi,
-                                 port='Neutron(1)',
-                                 output_synth_port=None,
-                                 asyncio_loop=asyncio.get_running_loop(),
-                                 incoming_midi_q=incoming_midi_q,
-                                 ))
-
-            input_controller_port = mido.open_input(
-                'Launchpad Pro Standalone Port',
-                callback=partial(on_input_midi,
-                                 port='Launchpad Pro Standalone Port',
-                                 output_synth_port=output_synth_port,
-                                 asyncio_loop=asyncio.get_running_loop(),
-                                 incoming_midi_q=incoming_midi_q,
-                                 ))
-
-            input_keyboard_port = mido.open_input(
-                'Arturia KeyStep 32',
-                callback=partial(on_input_midi,
-                                 port='Arturia KeyStep 32',
-                                 output_synth_port=output_synth_port,
-                                 asyncio_loop=asyncio.get_running_loop(),
-                                 incoming_midi_q=incoming_midi_q,
-                                 ))
-
-            input_sync_port = mido.open_input(
-                'TR-6S',
-                callback=partial(on_input_midi,
-                                 port='TR-6S',
-                                 output_synth_port=None,
-                                 asyncio_loop=asyncio.get_running_loop(),
-                                 incoming_midi_q=incoming_midi_q,
-                                 ))
-
-            stack.enter_context(input_controller_port)
-            stack.enter_context(input_keyboard_port)
-            stack.enter_context(input_sync_port)
-            stack.enter_context(output_synth_port)
-
-            events = Events(incoming_midi_q=incoming_midi_q)
-            midi_clock = MidiClock()
-
-            tasks = [
-                # asyncio.create_task(note_generator(output_synth_port)),
-                asyncio.create_task(monitoring_generator(events, output_synth_port)),
-                asyncio.create_task(sequencer_generator(events, midi_clock, output_synth_port)),
-                asyncio.create_task(clock_generator(output_synth_port, midi_clock)),
-                asyncio.create_task(tempo_controller(events, midi_clock)),
-                asyncio.create_task(events.run()),
-            ]
-
-            # TODO catch exceptions from tasks
-            # TODO proper exit and cancellation
-            await asyncio.gather(*tasks)
-    except KeyboardInterrupt:
-        print('interrupted')
-
-
-def on_input_midi(msg, port: str, output_synth_port, asyncio_loop, incoming_midi_q):
-    # print(msg, port)
-
-    # if msg.type != 'note_on' and msg.type != 'note_off':
-    #     return
-
-    asyncio_loop.call_soon_threadsafe(incoming_midi_q.put_nowait,
-                                      IncomingMidi(midi_msg=msg, port=port))
-
-
-if __name__ == '__main__':
-    print(mido.get_input_names())
-
-    asyncio.run(run_generators(), debug=True)
-
-
-# ['Launchpad Pro Live Port', 'Launchpad Pro Standalone Port', 'Launchpad Pro MIDI Port',
-#  'Neutron(1)', 'PS60 KEYBOARD', 'Arturia KeyStep 32', 'TR-6S', 'TR-6S CTRL',
-#  'Launchpad Pro Live Port', 'Launchpad Pro Standalone Port', 'Launchpad Pro MIDI Port',
-#  'Neutron(1)', 'Arturia KeyStep 32', 'TR-6S', 'TR-6S CTRL']
-
-
-# Arturia KeyStep 32:Arturia KeyStep 32 MIDI 1 24:0
-# Arturia KeyStep 32:Arturia KeyStep 32 MIDI 1 24:0
-# Launchpad Pro:Launchpad Pro MIDI 1 20:0
-# Launchpad Pro:Launchpad Pro MIDI 1 20:0
-# Launchpad Pro:Launchpad Pro MIDI 2 20:1
-# Launchpad Pro:Launchpad Pro MIDI 2 20:1
-# Launchpad Pro:Launchpad Pro MIDI 3 20:2
-# Launchpad Pro:Launchpad Pro MIDI 3 20:2
-# Midi Through:Midi Through Port-0 14:0
-# Midi Through:Midi Through Port-0 14:0
-# Neutron(1):Neutron(1) MIDI 1 16:0
-# Neutron(1):Neutron(1) MIDI 1 16:0
-# PS60:PS60 MIDI 1 28:0
-# PS60:PS60 MIDI 1 28:0
-# TR-6S:TR-6S MIDI 1 32:0
-# TR-6S:TR-6S MIDI 1 32:0
-# TR-6S:TR-6S MIDI 2 32:1
-# TR-6S:TR-6S MIDI 2 32:1
+# midi_in = reactivex.of(
+#     ('active', 'main', True),
+#     ('midicc', 'LaunchPad1', 1, 127),  # tempo dec
+#     ('midicc', 'LaunchPad1', 1, 0),
+#     ('midicc', 'LaunchPad1', 2, 127),  # tempo inc
+#     ('midicc', 'LaunchPad1', 2, 0),
+#     ('midicc', 'LaunchPad1', 3, 127),  # shift x10 pressed
+#     ('midicc', 'LaunchPad1', 1, 127),  # tempo dec
+#     ('midicc', 'LaunchPad1', 1, 0),
+#     ('midicc', 'LaunchPad1', 1, 127),  # tempo dec
+#     ('midicc', 'LaunchPad1', 1, 0),
+#     ('midicc', 'LaunchPad1', 2, 127),  # tempo inc
+#     ('midicc', 'LaunchPad1', 2, 0),
+#     ('midicc', 'LaunchPad1', 3, 0),  # shift x10 released
+#     ('midicc', 'LaunchPad1', 2, 127),  # tempo inc
+#     ('midicc', 'LaunchPad1', 2, 0),
+#     # ('active', 'shuffle', True),
+
+#     # ('midicc', 'LaunchPad1', 2, 127),
+#     # ('midicc', 'LaunchPad1', 2, 0),
+
+#     # ('active', 'shuffle', False),
+
+#     # ('midicc', 'LaunchPad1', 2, 127),
+#     # ('midicc', 'LaunchPad1', 2, 0),
+
+#     # ('midicc', 'LaunchPad2', 2, 0),
+#     # ('midicc', 'LaunchPad2', 2, 0),
+#     # ('midicc', 'LaunchPad2', 1, 0),
+# )
+
+midi_in = midi_in_subj.pipe(
+    ops.map(midi_in_to_device_event)
+)
+
+midi_in.pipe(
+    ops.merge(
+        yaml_pipelines.get_var_subject(('main', 'active')).pipe(
+            ops.map(lambda v: (('main', 'active'), v))
+        )
+    ),
+    activity_manager(),
+    ops.do_action(
+        on_next=lambda v: logger.debug(f'Activity Manager out: {v}'),
+        on_completed=lambda: logger.debug(f'Activity Manager on_completed')
+    ),
+    ops.starmap(lambda ev, widget: widget.map_device_control_event(ev)),
+    ops.filter(lambda ev: ev is not None),
+    ops.do_action(
+        on_next=route_to_var
+    ),
+).subscribe()
+
+for pipeline in yaml_pipelines.pipelines:
+    pipeline.obs.subscribe(
+        on_next=lambda v, pipe=pipeline.repr: logger.debug(f'pipeline {pipe} on_next: {v}'),
+        on_completed=lambda: logger.debug(f'pipeline on_completed'),
+        on_error=lambda e: logger.debug(f'pipeline error {e}'))
+
+time.sleep(100)

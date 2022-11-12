@@ -5,19 +5,11 @@
   "version": "0.2.0",
   "configurations": [
     {
-      "name": "yaml-parse",
-      "type": "python",
-      "request": "launch",
-      "program": "live_py/yaml-parse.py",
-      "console": "integratedTerminal",
-      "justMyCode": false
-    },
-    {
       "name": "live_py package",
       "type": "python",
       "request": "launch",
       "module": "live_py",
-      "justMyCode": false
+      "justMyCode": false,
     }
   ]
 }

@@ -1,49 +1,69 @@
 - device: Launch Control
   controls:
     1:
-      type: midi_note_on
+      type: midi_note
       input: Launch Control
       channel: 2
       note: 9
     2:
-      type: midi_note_on
+      type: midi_note
       input: Launch Control
       channel: 2
       note: 10
     3:
-      type: midi_note_on
+      type: midi_note
       input: Launch Control
       channel: 2
       note: 11
+    8:
+      type: midi_note
+      input: Launch Control
+      channel: 2
+      note: 16
 
 - page: main
   active: true
   widgets:
-    - button: shift_shuffle
+
     - button: tempo_reset
+
+    - button: shift_inc
+      device: Launch Control
+      device_control: 1
 
     - button: tempo_dec
       device: Launch Control
-      device_control: 1
+      device_control: 2
+
     - button: tempo_inc
       device: Launch Control
-      device_control: 2
-    - button: shift_inc
-      device: Launch Control
       device_control: 3
+
+    - button: shift_tempo_shuffle
+      device: Launch Control
+      device_control: 8
 
 - page: shuffle
   active: false
   widgets:
     - button: shuffle_dec
       device: Launch Control
-      device_control: 1
+      device_control: 2
+
     - button: shuffle_inc
       device: Launch Control
-      device_control: 2
+      device_control: 3
+
     - button: shuffle_reset
 
 - var: inc
+
+- pipeline:
+  pipe:
+    - map: bool(shift_tempo_shuffle.value)
+      vars:
+        shift_tempo_shuffle.value: rx
+    - out: shuffle.active
 
 - pipeline:
   pipe:
@@ -62,7 +82,7 @@
         input: rx
         clock.tempo: static
         inc.value: static
-    - map: input * 1.00001
+    - map: input * 1.0000
       vars:
         input: rx
     - out: clock.tempo
