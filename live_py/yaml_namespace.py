@@ -40,3 +40,7 @@ def new_obj(yaml_obj: dict) -> Optional[YamlObject]:
 
 def get_obj(name: str):
     return yaml_namespace[name]
+
+
+def find_all_obj():
+    yield from yaml_namespace.items()

@@ -10,9 +10,13 @@ logger = logging.getLogger(__name__)
 
 
 def create_var(var_name):
-    if var_out_subjects.get(var_name, None) is None:
+    subj = var_out_subjects.get(var_name, None)
+    if subj is None:
         logger.debug(f'Create out subject for {var_name}')
-        var_out_subjects[var_name] = reactivex.Subject()
+        subj = reactivex.Subject()
+        var_out_subjects[var_name] = subj
+
+    return subj
 
 
 def get_var_subject(var_name: tuple[str, str]) -> Optional[reactivex.Subject]:

@@ -68,15 +68,13 @@ class Page(YamlObject):
         widgets_iter = (yaml_namespace.new_obj(w) for w in yaml_obj['widgets'])
         widgets_iter = filter(lambda o: o is not None, widgets_iter)
 
-        # self.name = next(iter(yaml_obj.items()))[1]
-
         self.widgets = list(widgets_iter)
 
         for w in self.widgets:
             assert(isinstance(w, WidgetControl))
 
         active = yaml_obj['active']
-        yaml_pipelines.create_var((self.name, 'active'))
+        self.subj_active = yaml_pipelines.create_var((self.name, 'active'))
         yaml_pipelines.create_pipeline({
             'pipe':
                 [

@@ -1,19 +1,19 @@
 import logging
 import pprint
-import time
+import signal
+from threading import Event
+from typing import List
 
 import coloredlogs
 import mido
+import reactivex
 import yaml
 from reactivex import Subject
 from reactivex import operators as ops
-import reactivex
 
-from . import (yaml_device_controls, yaml_devices, yaml_namespace,
-               yaml_pipelines)
-from .base import DeviceControlEvent
-from .yaml_elements import WidgetControl
-from .activity_manager import activity_manager
+from live_py import (yaml_device_controls, yaml_devices, yaml_elements,
+                     yaml_namespace, yaml_pipelines)
+from live_py.activity_manager import activity_manager
 
 pp = pprint.PrettyPrinter(indent=4)
 
@@ -32,12 +32,6 @@ def route_to_var(msg):
         logger.debug(f'route {msg[1]} to {msg[0]}')
         var_subject.on_next(msg[1])
 
-# def device_control_event_to_widget_event(device_control_event: DeviceControlEvent,
-#                                          widget: WidgetControl):
-#     widget_event = widget.map_device_control_event(device_control_event)
-
-#     if widget_event:
-#         reactivex.just()
 
 with open('set-pipelines.yaml', 'r') as stream:
     yaml_data = yaml.safe_load(stream)
@@ -90,53 +84,32 @@ def midi_in_to_device_event(midi_msg):
     return ('dummy', 'Device', 0, 0)
 
 
+def get_page_active_subjects():
+    obs: List[reactivex.Observable] = []
+
+    for obj_name, obj in yaml_namespace.find_all_obj():
+        if isinstance(obj, yaml_elements.Page):
+            logger.debug(f"Will listen to {obj_name}.active subject")
+
+            obs.append(
+                obj.subj_active.pipe(
+                    ops.map(lambda v, obj_name=obj_name: ((obj_name, 'active'), v))
+                )
+            )
+
+    return obs
+
+
 input_midi_port = mido.open_input('Launch Control', callback=on_midi_in)
 
-# TODO send ('active', 'main', True) first to Activity Manager
-
-print(input_midi_port)
-
-# midi_in = reactivex.of(
-#     ('active', 'main', True),
-#     ('midicc', 'LaunchPad1', 1, 127),  # tempo dec
-#     ('midicc', 'LaunchPad1', 1, 0),
-#     ('midicc', 'LaunchPad1', 2, 127),  # tempo inc
-#     ('midicc', 'LaunchPad1', 2, 0),
-#     ('midicc', 'LaunchPad1', 3, 127),  # shift x10 pressed
-#     ('midicc', 'LaunchPad1', 1, 127),  # tempo dec
-#     ('midicc', 'LaunchPad1', 1, 0),
-#     ('midicc', 'LaunchPad1', 1, 127),  # tempo dec
-#     ('midicc', 'LaunchPad1', 1, 0),
-#     ('midicc', 'LaunchPad1', 2, 127),  # tempo inc
-#     ('midicc', 'LaunchPad1', 2, 0),
-#     ('midicc', 'LaunchPad1', 3, 0),  # shift x10 released
-#     ('midicc', 'LaunchPad1', 2, 127),  # tempo inc
-#     ('midicc', 'LaunchPad1', 2, 0),
-#     # ('active', 'shuffle', True),
-
-#     # ('midicc', 'LaunchPad1', 2, 127),
-#     # ('midicc', 'LaunchPad1', 2, 0),
-
-#     # ('active', 'shuffle', False),
-
-#     # ('midicc', 'LaunchPad1', 2, 127),
-#     # ('midicc', 'LaunchPad1', 2, 0),
-
-#     # ('midicc', 'LaunchPad2', 2, 0),
-#     # ('midicc', 'LaunchPad2', 2, 0),
-#     # ('midicc', 'LaunchPad2', 1, 0),
-# )
+logger.info(f"Opened {input_midi_port} MIDI port")
 
 midi_in = midi_in_subj.pipe(
     ops.map(midi_in_to_device_event)
 )
 
 midi_in.pipe(
-    ops.merge(
-        yaml_pipelines.get_var_subject(('main', 'active')).pipe(
-            ops.map(lambda v: (('main', 'active'), v))
-        )
-    ),
+    ops.merge(*get_page_active_subjects()),
     activity_manager(),
     ops.do_action(
         on_next=lambda v: logger.debug(f'Activity Manager out: {v}'),
@@ -155,4 +128,16 @@ for pipeline in yaml_pipelines.pipelines:
         on_completed=lambda: logger.debug(f'pipeline on_completed'),
         on_error=lambda e: logger.debug(f'pipeline error {e}'))
 
-time.sleep(100)
+
+def signal_handler(signal_number, frame):
+    quit_event.set()
+
+
+quit_event = Event()
+
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
+
+quit_event.wait()
+
+logger.info("Exit")

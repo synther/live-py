@@ -19,12 +19,11 @@
       type: midi_note
       input: Launch Control
       channel: 2
-      note: 16
+      note: 28
 
 - page: main
   active: true
   widgets:
-
     - button: tempo_reset
 
     - button: shift_inc
@@ -74,6 +73,36 @@
 
 - pipeline:
   pipe:
+    - filter: shuffle_dec.value > 0
+      vars:
+        shuffle_dec.value: rx
+    - map: >
+        clock.shuffle + inc.value * (
+          input[0] * (-1)
+        )
+      vars:
+        clock.shuffle: static
+        inc.value: static
+        input: rx
+    - out: clock.shuffle
+
+- pipeline:
+  pipe:
+    - filter: shuffle_inc.value > 0
+      vars:
+        shuffle_inc.value: rx
+    - map: >
+        clock.shuffle + inc.value * (
+          input[0] * (+1)
+        )
+      vars:
+        clock.shuffle: static
+        inc.value: static
+        input: rx
+    - out: clock.shuffle
+
+- pipeline:
+  pipe:
     - filter: tempo_dec.value > 0
       vars:
         tempo_dec.value: rx
@@ -103,6 +132,11 @@
   pipe:
     - one_shot: 120
     - out: clock.tempo
+
+- pipeline:
+  pipe:
+    - one_shot: 50
+    - out: clock.shuffle
 
 - pipeline:
   pipe:
