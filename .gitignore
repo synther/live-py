@@ -129,3 +129,7 @@ dmypy.json
 .pyre/
 
 .vscode/settings.json
+
+live_py/old/
+set-pipelines.py
+live_py/yaml_parse.py
