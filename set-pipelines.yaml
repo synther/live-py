@@ -56,6 +56,7 @@
     - button: shuffle_reset
 
 - var: inc
+  value: 1
 
 - pipeline:
   pipe:
@@ -127,21 +128,6 @@
         clock.tempo: static
         inc.value: static
     - out: clock.tempo
-
-- pipeline:
-  pipe:
-    - one_shot: 120
-    - out: clock.tempo
-
-- pipeline:
-  pipe:
-    - one_shot: 50
-    - out: clock.shuffle
-
-- pipeline:
-  pipe:
-    - one_shot: 1
-    - out: inc.value
 
 - clock: clock
   tempo: 120

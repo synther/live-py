@@ -1,17 +1,35 @@
 import dataclasses
 import logging
 import uuid
-from typing import Optional, Type, Dict
+from typing import Iterable, Optional, Type, Dict
+
+from . import yaml_pipelines
 
 logger = logging.getLogger(__name__)
 
 
 class YamlObject:
-    def __init__(self, yaml_obj: dict):
+    def __init__(self,
+                 yaml_obj: dict,
+                 var_list: Iterable[str] = []):
+        logger.debug(f'Create {type(self).__name__} from {yaml_obj}')
+
         self.yaml_class, self.name = next(iter(yaml_obj.items()))
 
         if self.name is None:
             self.name = f'{self.yaml_class}-{str(uuid.uuid4())}'
+
+        self.var_subjects = {}
+
+        for var in var_list:
+            self.var_subjects[var] = yaml_pipelines.create_var((self.name, var))
+            yaml_pipelines.create_pipeline({
+                'pipe':
+                    [
+                        {'one_shot': yaml_obj[var]},
+                        {'out': f'{self.name}.{var}'}
+                    ]
+            }, init_pipeline=True)
 
 
 yaml_namespace = {}

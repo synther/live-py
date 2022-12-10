@@ -3,7 +3,7 @@ from typing import Iterable, Optional, Tuple
 
 from live_py.base import DeviceControlEvent
 
-from . import device_control_events, yaml_namespace, yaml_pipelines
+from . import device_control_events, yaml_namespace
 from .yaml_namespace import YamlObject
 
 logger = logging.getLogger(__name__)
@@ -61,9 +61,7 @@ class Button(WidgetControl):
 
 class Page(YamlObject):
     def __init__(self, yaml_obj: dict):
-        logger.debug(f'Create Page from {yaml_obj}')
-
-        super().__init__(yaml_obj)
+        super().__init__(yaml_obj, ['active'])
 
         widgets_iter = (yaml_namespace.new_obj(w) for w in yaml_obj['widgets'])
         widgets_iter = filter(lambda o: o is not None, widgets_iter)
@@ -73,25 +71,15 @@ class Page(YamlObject):
         for w in self.widgets:
             assert(isinstance(w, WidgetControl))
 
-        active = yaml_obj['active']
-        self.subj_active = yaml_pipelines.create_var((self.name, 'active'))
-        yaml_pipelines.create_pipeline({
-            'pipe':
-                [
-                    {'one_shot': active},
-                    {'out': f'{self.name}.active'}
-                ]
-        })
+
+class Var(YamlObject):
+    def __init__(self, yaml_obj: dict):
+        super().__init__(yaml_obj, ['value'])
 
 
-class Var:
-    def __init__(self, yaml: dict):
-        logger.debug(f'Create from {yaml}')
-
-
-class Clock:
-    def __init__(self, yaml: dict):
-        logger.debug(f'Create from {yaml}')
+class Clock(YamlObject):
+    def __init__(self, yaml_obj: dict):
+        super().__init__(yaml_obj, ['tempo', 'shuffle'])
 
 
 def get_widgets_in_page(page: str) -> Iterable[WidgetControl]:

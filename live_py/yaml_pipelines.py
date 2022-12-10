@@ -23,8 +23,13 @@ def get_var_subject(var_name: tuple[str, str]) -> Optional[reactivex.Subject]:
     return var_out_subjects.get(var_name, None)
 
 
-def create_pipeline(yaml_obj):
-    pipelines.append(Pipeline(yaml_obj, var_out_subjects))
+def create_pipeline(yaml_obj, init_pipeline=False):
+    pipeline = Pipeline(yaml_obj, var_out_subjects)
+
+    if init_pipeline:
+        pipelines.append(pipeline)
+    else:
+        pipelines.insert(0, Pipeline(yaml_obj, var_out_subjects))
 
 
 T_VAR_NAME = Union[str, tuple[str, str]]

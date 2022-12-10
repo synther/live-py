@@ -92,7 +92,7 @@ def get_page_active_subjects():
             logger.debug(f"Will listen to {obj_name}.active subject")
 
             obs.append(
-                obj.subj_active.pipe(
+                obj.var_subjects['active'].pipe(
                     ops.map(lambda v, obj_name=obj_name: ((obj_name, 'active'), v))
                 )
             )
@@ -122,10 +122,14 @@ midi_in.pipe(
     ),
 ).subscribe()
 
+yaml_namespace.get_obj('clock').var_subjects['tempo'].subscribe(
+    on_next=lambda v: logger.info(f'Chaning BPM = {v}')
+)
+
 for pipeline in yaml_pipelines.pipelines:
     pipeline.obs.subscribe(
         on_next=lambda v, pipe=pipeline.repr: logger.debug(f'pipeline {pipe} on_next: {v}'),
-        on_completed=lambda: logger.debug(f'pipeline on_completed'),
+        on_completed=lambda pipe=pipeline.repr: logger.debug(f'pipeline {pipe} on_completed'),
         on_error=lambda e: logger.debug(f'pipeline error {e}'))
 
 
