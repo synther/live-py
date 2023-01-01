@@ -1,7 +1,7 @@
 import dataclasses
 import logging
 import uuid
-from typing import Iterable, Optional, Type, Dict
+from typing import Dict, Iterable, Optional, Type
 
 from . import yaml_pipelines
 
@@ -48,6 +48,9 @@ def new_obj(yaml_obj: dict) -> Optional[YamlObject]:
         obj_name = f'{obj_class}-{str(uuid.uuid4())}'
 
     yaml_class = yaml_classes.get(obj_class, None)
+
+    # TODO create YamlObject first, then reference it by .name.
+    # Otherwise, object.name != obj_name if anonymous
 
     if yaml_class:
         yaml_namespace[obj_name] = yaml_classes[obj_class](yaml_obj)

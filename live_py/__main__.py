@@ -1,6 +1,8 @@
 import logging
 import pprint
 import signal
+from contextlib import ExitStack
+from functools import partial
 from threading import Event
 from typing import List
 
@@ -11,8 +13,7 @@ import yaml
 from reactivex import Subject
 from reactivex import operators as ops
 
-from live_py import (yaml_device_controls, yaml_devices, yaml_elements,
-                     yaml_namespace, yaml_pipelines)
+from live_py import yaml_devices, yaml_elements, yaml_namespace, yaml_pipelines
 from live_py.activity_manager import activity_manager
 
 pp = pprint.PrettyPrinter(indent=4)
@@ -33,55 +34,39 @@ def route_to_var(msg):
         var_subject.on_next(msg[1])
 
 
-with open('set-pipelines.yaml', 'r') as stream:
-    yaml_data = yaml.safe_load(stream)
+def load_yaml(yaml_path: str):
+    with open(yaml_path, 'r') as stream:
+        yaml_data = yaml.safe_load(stream)
 
-    for yaml_obj in yaml_data:
-        if next(iter(yaml_obj)) == 'device':
-            yaml_devices.create_device(yaml_obj)
+        for yaml_obj in yaml_data:
+            if next(iter(yaml_obj)) == 'device':
+                yaml_devices.create_device(yaml_obj)
 
-    for yaml_obj in yaml_data:
-        yaml_namespace.new_obj(yaml_obj)
+        for yaml_obj in yaml_data:
+            yaml_namespace.new_obj(yaml_obj)
 
-    for yaml_obj in yaml_data:
-        if next(iter(yaml_obj)) == 'pipeline':
-            yaml_pipelines.create_pipeline(yaml_obj)
-
-
-midi_in_subj = Subject()
-
-print(mido.get_input_names())
+        for yaml_obj in yaml_data:
+            if next(iter(yaml_obj)) == 'pipeline':
+                yaml_pipelines.create_pipeline(yaml_obj)
 
 
-def on_midi_in(msg):
-    logger.debug(f"midi msg: {msg}")
+def on_midi_in(msg, device_name):
+    logger.debug(f'mido msg from "{device_name}: {msg}')
 
     if msg.type in ('note_on', 'note_off'):
-        midi_in_subj.on_next(msg)
+        midi_in_subj.on_next((device_name, msg))
 
 
-def midi_in_to_device_event(midi_msg):
-    if midi_msg.type in ('note_on', 'note_off'):
-        for control in yaml_devices.get_controls('Launch Control'):
-            if isinstance(control, yaml_device_controls.MidiNoteDeviceControl) and \
-                    control.midi_input == 'Launch Control' and \
-                control.midi_channel == midi_msg.channel and \
-                    control.midi_note == midi_msg.note:
+def midi_in_to_device_event(device_name, mido_msg):
+    device_control_events = [
+        control.midi_to_device_event(mido_msg) for control in yaml_devices.find_controls_by_mido_msg(
+            device_name, mido_msg
+        )
+    ]
 
-                m = control.midi_to_device_event(midi_msg)
+    logger.debug(f"Converted device control events, {mido_msg=}, {device_control_events=}")
 
-                logger.debug(f"Found device control: {m}")
-
-                # TODO one control id - multiple DeviceControls
-
-                # TODO return multiple device events
-                # TODO return none device events
-
-                return m
-
-    logger.debug(f"Not found device control, {midi_msg=}")
-
-    return ('dummy', 'Device', 0, 0)
+    return reactivex.from_list(device_control_events)
 
 
 def get_page_active_subjects():
@@ -100,48 +85,63 @@ def get_page_active_subjects():
     return obs
 
 
-input_midi_port = mido.open_input('Launch Control', callback=on_midi_in)
+load_yaml('set.yaml')
+midi_in_subj = Subject()
+logger.info(f'MIDI inputs: {mido.get_input_names()}')
 
-logger.info(f"Opened {input_midi_port} MIDI port")
+with ExitStack() as open_mido_devices:
+    for midi_input in yaml_devices.find_midi_inputs():
+        logger.debug(f'Open midi device "{midi_input}"...')
 
-midi_in = midi_in_subj.pipe(
-    ops.map(midi_in_to_device_event)
-)
+        open_mido_devices.enter_context(
+            mido.open_input(
+                midi_input,
+                callback=partial(on_midi_in, device_name=midi_input),
+            )
+        )
 
-midi_in.pipe(
-    ops.merge(*get_page_active_subjects()),
-    activity_manager(),
-    ops.do_action(
-        on_next=lambda v: logger.debug(f'Activity Manager out: {v}'),
-        on_completed=lambda: logger.debug(f'Activity Manager on_completed')
-    ),
-    ops.starmap(lambda ev, widget: widget.map_device_control_event(ev)),
-    ops.filter(lambda ev: ev is not None),
-    ops.do_action(
-        on_next=route_to_var
-    ),
-).subscribe()
+        logger.info(f"Opened {midi_input} MIDI port")
 
-yaml_namespace.get_obj('clock').var_subjects['tempo'].subscribe(
-    on_next=lambda v: logger.info(f'Chaning BPM = {v}')
-)
+    midi_in = midi_in_subj.pipe(
+        ops.starmap(midi_in_to_device_event),
+        ops.merge_all(),
+    )
 
-for pipeline in yaml_pipelines.pipelines:
-    pipeline.obs.subscribe(
-        on_next=lambda v, pipe=pipeline.repr: logger.debug(f'pipeline {pipe} on_next: {v}'),
-        on_completed=lambda pipe=pipeline.repr: logger.debug(f'pipeline {pipe} on_completed'),
-        on_error=lambda e: logger.debug(f'pipeline error {e}'))
+    midi_in.pipe(
+        ops.merge(*get_page_active_subjects()),
+        activity_manager(),
+        ops.do_action(
+            on_next=lambda v: logger.debug(f'Activity Manager out: {v}'),
+            on_completed=lambda: logger.debug(f'Activity Manager on_completed')
+        ),
+        ops.starmap(lambda ev, widget: widget.map_device_control_event(ev)),
+        ops.filter(lambda ev: ev is not None),
+        ops.do_action(
+            on_next=route_to_var
+        ),
+    ).subscribe()
 
+    yaml_namespace.get_obj('clock').var_subjects['tempo'].subscribe(
+        on_next=lambda v: logger.info(f'Changing BPM = {v}')
+    )
+    yaml_namespace.get_obj('clock').var_subjects['shuffle'].subscribe(
+        on_next=lambda v: logger.info(f'Changing shuffle = {v}')
+    )
 
-def signal_handler(signal_number, frame):
-    quit_event.set()
+    for pipeline in yaml_pipelines.pipelines:
+        pipeline.obs.subscribe(
+            on_next=lambda v, pipe=pipeline.repr: logger.debug(f'pipeline {pipe} on_next: {v}'),
+            on_completed=lambda pipe=pipeline.repr: logger.debug(f'pipeline {pipe} on_completed'),
+            on_error=lambda e: logger.debug(f'pipeline error {e}'))
 
+    def signal_handler(signal_number, frame):
+        quit_event.set()
 
-quit_event = Event()
+    quit_event = Event()
 
-signal.signal(signal.SIGINT, signal_handler)
-signal.signal(signal.SIGTERM, signal_handler)
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
 
-quit_event.wait()
+    quit_event.wait()
 
-logger.info("Exit")
+    logger.info("Exit")

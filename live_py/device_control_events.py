@@ -16,3 +16,8 @@ class MidiNoteOffDeviceControlEvent(DeviceControlEvent):
 @dataclasses.dataclass
 class MidiNoteDeviceControlEvent(DeviceControlEvent):
     velocity: int
+
+
+@dataclasses.dataclass
+class MidiCcDeviceControlEvent(DeviceControlEvent):
+    value: int
