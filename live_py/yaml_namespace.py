@@ -1,7 +1,6 @@
-import dataclasses
 import logging
 import uuid
-from typing import Dict, Iterable, Optional, Type
+from typing import Dict, Iterable, List, Optional, Type, TypeVar
 
 from . import yaml_pipelines
 
@@ -23,16 +22,18 @@ class YamlObject:
 
         for var in var_list:
             self.var_subjects[var] = yaml_pipelines.create_var((self.name, var))
-            yaml_pipelines.create_pipeline({
-                'pipe':
-                    [
-                        {'one_shot': yaml_obj[var]},
-                        {'out': f'{self.name}.{var}'}
-                    ]
-            }, init_pipeline=True)
+
+            if var in yaml_obj:
+                yaml_pipelines.create_pipeline({
+                    'pipe':
+                        [
+                            {'one_shot': yaml_obj[var]},
+                            {'out': f'{self.name}.{var}'}
+                        ]
+                }, init_pipeline=True)
 
 
-yaml_namespace = {}
+yaml_namespace: Dict[str, YamlObject] = {}
 yaml_classes: Dict[str, Type[YamlObject]] = {}
 
 
@@ -42,19 +43,14 @@ def register_class(yaml_class_name: str, klass: Type[YamlObject]):
 
 def new_obj(yaml_obj: dict) -> Optional[YamlObject]:
     assert type(yaml_obj) is dict
-    obj_class, obj_name = next(iter(yaml_obj.items()))
 
-    if obj_name is None:
-        obj_name = f'{obj_class}-{str(uuid.uuid4())}'
-
+    obj_class, _ = next(iter(yaml_obj.items()))
     yaml_class = yaml_classes.get(obj_class, None)
 
-    # TODO create YamlObject first, then reference it by .name.
-    # Otherwise, object.name != obj_name if anonymous
-
     if yaml_class:
-        yaml_namespace[obj_name] = yaml_classes[obj_class](yaml_obj)
-        return yaml_namespace[obj_name]
+        obj = yaml_class(yaml_obj)
+        yaml_namespace[obj.name] = obj
+        return obj
     else:
         return None
 
@@ -65,3 +61,14 @@ def get_obj(name: str):
 
 def find_all_obj():
     yield from yaml_namespace.items()
+
+
+T = TypeVar('T')
+
+
+def find_by_class(klass: Type[T]) -> List[T]:
+    # TODO fix O(n)
+
+    return [
+        obj for obj in yaml_namespace.values() if isinstance(obj, klass)
+    ]

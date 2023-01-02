@@ -34,7 +34,7 @@ def activity_manager():
         for active_page in active_pages:
             for widget in yaml_elements.get_widgets_in_page(active_page):
                 if (widget.device_name, widget.device_control_id) == (
-                        device_control.device_name,
+                        device_control.device.name,
                         device_control.control_id):
                     return widget
 
@@ -47,7 +47,14 @@ def activity_manager():
 
                 match value:
                     case DeviceControlEvent():
-                        affected_widget = find_top_widget(value.control)
+                        control = value.control
+
+                        if not control:
+                            logger.debug(
+                                f"Reject {value}. Event doesn't have a control. Not an input event?")
+                            return
+
+                        affected_widget = find_top_widget(control)
 
                         if affected_widget:
                             logger.debug(f"Pass {value} + {affected_widget}")

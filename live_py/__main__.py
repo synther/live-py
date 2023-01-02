@@ -39,10 +39,6 @@ def load_yaml(yaml_path: str):
         yaml_data = yaml.safe_load(stream)
 
         for yaml_obj in yaml_data:
-            if next(iter(yaml_obj)) == 'device':
-                yaml_devices.create_device(yaml_obj)
-
-        for yaml_obj in yaml_data:
             yaml_namespace.new_obj(yaml_obj)
 
         for yaml_obj in yaml_data:

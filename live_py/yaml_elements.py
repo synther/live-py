@@ -37,9 +37,11 @@ class Button(WidgetControl):
 
         super().__init__(
             device_name=yaml_obj.get('device', None),
-            device_control_id=yaml_obj.get('device_control', None),
+            device_control_id=yaml_obj.get('device_control_id', None),
             yaml_obj=yaml_obj,
         )
+
+        # TODO address device controls by yaml namespace name, not by id
 
     def __repr__(self) -> str:
         return f'Button("{self.name}")'

@@ -1,22 +1,33 @@
-import abc
 import dataclasses
-from typing import Any, ClassVar, Dict, Optional
+from typing import ClassVar, List, Optional
+
+from . import yaml_namespace
+from .yaml_namespace import YamlObject
 
 
-@dataclasses.dataclass
-class DeviceControl:
+class Device(YamlObject):
+    controls: List["DeviceControl"] = []
+
+    def __init__(self, yaml_obj: dict):
+        super().__init__(yaml_obj, [])
+
+        for yaml_control in yaml_obj['controls']:
+            control = yaml_namespace.new_obj(yaml_control)
+
+            if control:
+                assert isinstance(control, DeviceControl)
+                control.device = self
+                self.controls.append(control)
+
+
+class DeviceControl(YamlObject):
     yaml_type: ClassVar[str]
-    device_name: str
-    control_id: int
+    device: Device
+    control_id: Optional[int]
 
-    @classmethod
-    @abc.abstractmethod
-    def create_from_yaml(cls, device_name: str, control_id: int, control_props: Dict[str, Any]):
-        ...
-
-
-class Device:
-    controls: Dict[int, DeviceControl] = {}
+    def __init__(self, yaml_obj: dict):
+        super().__init__(yaml_obj)
+        self.control_id = yaml_obj.get('id', None)
 
 
 @dataclasses.dataclass
