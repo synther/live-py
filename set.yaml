@@ -21,6 +21,11 @@
       channel: 2
       note: 28
 
+    1000:
+      type: midi_channel
+      input: Launch Control
+      channel: 2
+
 - page: main
   active: true
   widgets:

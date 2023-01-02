@@ -2,22 +2,29 @@ import dataclasses
 
 from .base import DeviceControlEvent
 
+@dataclasses.dataclass
+class MidiChannelControlEvent(DeviceControlEvent):
+    channel: int
 
 @dataclasses.dataclass
-class MidiNoteOnDeviceControlEvent(DeviceControlEvent):
+class MidiNoteOnDeviceControlEvent(MidiChannelControlEvent):
     velocity: int
+    note: int
 
 
 @dataclasses.dataclass
-class MidiNoteOffDeviceControlEvent(DeviceControlEvent):
+class MidiNoteOffDeviceControlEvent(MidiChannelControlEvent):
     velocity: int
+    note: int
 
 
 @dataclasses.dataclass
-class MidiNoteDeviceControlEvent(DeviceControlEvent):
+class MidiNoteDeviceControlEvent(MidiChannelControlEvent):
     velocity: int
+    note: int
 
 
 @dataclasses.dataclass
-class MidiCcDeviceControlEvent(DeviceControlEvent):
+class MidiCcDeviceControlEvent(MidiChannelControlEvent):
+    cc: int
     value: int

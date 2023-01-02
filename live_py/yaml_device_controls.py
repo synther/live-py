@@ -22,15 +22,68 @@ class MidiDeviceControl(DeviceControl, abc.ABC):
 
 
 @dataclasses.dataclass
-class MidiNoteOnDeviceControl(MidiDeviceControl):
+class MidiChannelDeviceControl(MidiDeviceControl):
+    yaml_type = 'midi_channel'
+    mido_msg_type = ('note_on', 'note_off', 'control_change')
+    midi_channel: int
+
+    def midi_to_device_event(self, msg) -> Optional[DeviceControlEvent]:
+        match msg.type:
+            case 'note_on':
+                return device_control_events.MidiNoteOnDeviceControlEvent(
+                    control=self,
+                    velocity=msg.velocity,
+                    note=msg.note,
+                    channel=msg.channel,
+                )
+
+            case 'note_off':
+                return device_control_events.MidiNoteOffDeviceControlEvent(
+                    control=self,
+                    velocity=msg.velocity,
+                    note=msg.note,
+                    channel=msg.channel,
+                )
+
+            case 'control_change':
+                return device_control_events.MidiCcDeviceControlEvent(
+                    control=self,
+                    cc=msg.control,
+                    value=msg.value,
+                    channel=msg.channel,
+                )
+
+        return None
+
+    def match_mido_msg(self, msg) -> bool:
+        return msg.type in self.mido_msg_type and \
+            msg.channel == self.midi_channel
+
+    @classmethod
+    def create_from_yaml(cls, device_name: str, control_id: int, control_props: Dict[str, Any]):
+        return MidiChannelDeviceControl(
+            device_name=device_name,
+            control_id=control_id,
+            midi_input=control_props['input'],
+            midi_channel=control_props['channel'],
+        )
+
+
+@dataclasses.dataclass
+class MidiNoteOnDeviceControl(MidiChannelDeviceControl):
     yaml_type = 'midi_note_on'
     mido_msg_type = ('note_on',)
-    midi_channel: int
+    # midi_channel: int
     midi_note: int
 
     def midi_to_device_event(self, msg):
         assert msg.type in self.mido_msg_type
-        return device_control_events.MidiNoteOnDeviceControlEvent(self, msg.velocity)
+        return device_control_events.MidiNoteOnDeviceControlEvent(
+            control=self,
+            velocity=msg.velocity,
+            note=msg.note,
+            channel=msg.channel,
+        )
 
     def match_mido_msg(self, msg) -> bool:
         return msg.type in self.mido_msg_type and \
@@ -49,15 +102,19 @@ class MidiNoteOnDeviceControl(MidiDeviceControl):
 
 
 @dataclasses.dataclass
-class MidiNoteOffDeviceControl(MidiDeviceControl):
+class MidiNoteOffDeviceControl(MidiChannelDeviceControl):
     yaml_type = 'midi_note_off'
     mido_msg_type = ('note_off',)
-    midi_channel: int
     midi_note: int
 
     def midi_to_device_event(self, msg):
         assert msg.type in self.mido_msg_type
-        return device_control_events.MidiNoteOffDeviceControlEvent(self, msg.velocity)
+        return device_control_events.MidiNoteOffDeviceControlEvent(
+            control=self,
+            velocity=msg.velocity,
+            note=msg.note,
+            channel=msg.channel,
+        )
 
     def match_mido_msg(self, msg) -> bool:
         return msg.type in self.mido_msg_type and \
@@ -76,16 +133,20 @@ class MidiNoteOffDeviceControl(MidiDeviceControl):
 
 
 @dataclasses.dataclass
-class MidiNoteDeviceControl(MidiDeviceControl):
+class MidiNoteDeviceControl(MidiChannelDeviceControl):
     yaml_type = 'midi_note'
     mido_msg_type = ('note_on', 'note_off')
-    midi_channel: int
     midi_note: int
 
     def midi_to_device_event(self, msg):
         assert msg.type in self.mido_msg_type
         velocity = msg.velocity if msg.type == 'note_on' else 0
-        return device_control_events.MidiNoteDeviceControlEvent(self, velocity)
+        return device_control_events.MidiNoteDeviceControlEvent(
+            control=self,
+            velocity=velocity,
+            note=msg.note,
+            channel=msg.channel,
+        )
 
     def match_mido_msg(self, msg) -> bool:
         return msg.type in self.mido_msg_type and \
@@ -104,15 +165,19 @@ class MidiNoteDeviceControl(MidiDeviceControl):
 
 
 @dataclasses.dataclass
-class MidiCcDeviceControl(MidiDeviceControl):
+class MidiCcDeviceControl(MidiChannelDeviceControl):
     yaml_type = 'midi_cc'
     mido_msg_type = ('control_change', )
-    midi_channel: int
     midi_control: int
 
     def midi_to_device_event(self, msg) -> Optional[DeviceControlEvent]:
         assert msg.type in self.mido_msg_type
-        return device_control_events.MidiCcDeviceControlEvent(self, msg.value)
+        return device_control_events.MidiCcDeviceControlEvent(
+            control=self,
+            cc=msg.control,
+            value=msg.value,
+            channel=msg.channel,
+        )
 
     def match_mido_msg(self, msg) -> bool:
         return msg.type in self.mido_msg_type and \
@@ -121,6 +186,8 @@ class MidiCcDeviceControl(MidiDeviceControl):
 
     @classmethod
     def create_from_yaml(cls, device_name: str, control_id: int, control_props: Dict[str, Any]):
+        # TODO rename "input" to "midi_device"
+
         return MidiCcDeviceControl(
             device_name=device_name,
             control_id=control_id,

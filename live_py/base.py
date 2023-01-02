@@ -1,6 +1,6 @@
 import abc
 import dataclasses
-from typing import Any, ClassVar, Dict
+from typing import Any, ClassVar, Dict, Optional
 
 
 @dataclasses.dataclass
@@ -21,4 +21,6 @@ class Device:
 
 @dataclasses.dataclass
 class DeviceControlEvent:
-    control: DeviceControl
+    control: Optional[DeviceControl]
+    """`control` which produced the event. None if the event was created during processing
+    """

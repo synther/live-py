@@ -102,12 +102,10 @@ with ExitStack() as open_mido_devices:
 
         logger.info(f"Opened {midi_input} MIDI port")
 
-    midi_in = midi_in_subj.pipe(
+    midi_in_subj.pipe(
         ops.starmap(midi_in_to_device_event),
         ops.merge_all(),
-    )
-
-    midi_in.pipe(
+    ).pipe(
         ops.merge(*get_page_active_subjects()),
         activity_manager(),
         ops.do_action(
