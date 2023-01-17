@@ -1,8 +1,11 @@
+import logging
 from typing import Dict, Iterable, List, Set
 
 from . import yaml_namespace
-from .base import DeviceControl, Device
+from .base import Device, DeviceControl
 from .yaml_device_controls import MidiDeviceControl
+
+logger = logging.getLogger(__name__)
 
 
 def get_controls(device_name: str) -> Iterable[DeviceControl]:

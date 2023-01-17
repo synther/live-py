@@ -26,8 +26,15 @@ class DeviceControl(YamlObject):
     control_id: Optional[int]
 
     def __init__(self, yaml_obj: dict):
-        super().__init__(yaml_obj)
+        super().__init__(yaml_obj,
+                         var_list=[
+                             'events_in',
+                             'events_out',
+                         ])
         self.control_id = yaml_obj.get('id', None)
+
+    def send(self, msg: "DeviceControlEvent"):
+        pass
 
 
 @dataclasses.dataclass

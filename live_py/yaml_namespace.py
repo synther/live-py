@@ -1,5 +1,6 @@
 import logging
 import uuid
+import reactivex
 from typing import Dict, Iterable, List, Optional, Type, TypeVar
 
 from . import yaml_pipelines
@@ -18,7 +19,7 @@ class YamlObject:
         if self.name is None:
             self.name = f'{self.yaml_class}-{str(uuid.uuid4())}'
 
-        self.var_subjects = {}
+        self.var_subjects: Dict[str, reactivex.Subject] = {}
 
         for var in var_list:
             self.var_subjects[var] = yaml_pipelines.create_var((self.name, var))

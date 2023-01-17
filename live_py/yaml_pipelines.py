@@ -9,6 +9,8 @@ from .combine_rx import combine_rx
 
 logger = logging.getLogger(__name__)
 
+# TODO a pipeline stops on the first error?
+
 
 def create_var(var_name):
     subj = var_out_subjects.get(var_name, None)
@@ -60,11 +62,13 @@ class Pipeline:
         assert self.obs
 
     def _create_pipe_element(self, pipe_element):
+        # TODO add "input" var implicitly. is it rx or static?
+
         match pipe_element:
             case {'map': fn, 'vars': in_vars}:
                 logger.debug(f"Map: {fn}")
                 logger.debug(f"Input vars: {tuple(in_vars.keys())}")
-                self._repr_parts.append(fn)
+                self._repr_parts.append(str(fn))
 
                 in_var_names = self._create_combine(in_vars)
                 assert self.obs
@@ -74,7 +78,7 @@ class Pipeline:
             case {'filter': fn, 'vars': in_vars}:
                 logger.debug(f"Filter: {fn}")
                 logger.debug(f"Input vars: {tuple(in_vars.keys())}")
-                self._repr_parts.append(fn)
+                self._repr_parts.append(str(fn))
 
                 in_var_names = self._create_combine(in_vars)
                 assert self.obs
@@ -82,7 +86,7 @@ class Pipeline:
                 self.obs = ops.filter(self._create_exec_fn(in_var_names, fn))(self.obs)
 
             case {'out': out_var}:
-                self._repr_parts.append(out_var)
+                self._repr_parts.append(str(out_var))
                 out_var = str_to_var_name(out_var)
 
                 logger.debug(f"Out to {out_var}")

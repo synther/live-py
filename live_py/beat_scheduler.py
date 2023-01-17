@@ -64,7 +64,7 @@ class BeatScheduledItem(object):
 ticks_per_beat = 1000  # about 0.5 ms tick resolution
 
 
-def bpm_to_tick_duration_usec(bpm: int) -> int:
+def bpm_to_tick_duration_usec(bpm: float) -> int:
     beat_duration_usec = 60 * 1000000 / bpm
     return int(beat_duration_usec / ticks_per_beat)
 
@@ -101,6 +101,10 @@ class BeatScheduler(PeriodicScheduler, abc.DisposableBase):
 
     @property
     def now(self) -> int:
+        """
+        In ticks
+        """
+
         ticks_passed_from_last_tick_duration_change = (
             now_world_usec() - self._last_tick_duration_change_usec
         ) / self._tick_duration_usec
