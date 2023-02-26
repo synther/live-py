@@ -1,11 +1,27 @@
 import dataclasses
+from typing import Optional
 
 from .base import DeviceControlEvent
 
 
 @dataclasses.dataclass
 class MidiControlEvent(DeviceControlEvent):
-    midi_device: str
+    midi_device: Optional[str]
+
+
+@dataclasses.dataclass
+class MidiClockEvent(MidiControlEvent):
+    pass
+
+
+@dataclasses.dataclass
+class MidiStartEvent(MidiControlEvent):
+    pass
+
+
+@dataclasses.dataclass
+class MidiStopEvent(MidiControlEvent):
+    pass
 
 
 @dataclasses.dataclass

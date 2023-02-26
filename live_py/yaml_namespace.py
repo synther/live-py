@@ -22,16 +22,26 @@ class YamlObject:
         self.var_subjects: Dict[str, reactivex.Subject] = {}
 
         for var in var_list:
+            silent = False
+
+            if var.startswith('!'):
+                var = var[1:]
+                silent = True
+
             self.var_subjects[var] = yaml_pipelines.create_var((self.name, var))
 
             if var in yaml_obj:
-                yaml_pipelines.create_pipeline({
-                    'pipe':
+                yaml_pipelines.create_pipeline(
+                    {
+                        'pipe':
                         [
                             {'one_shot': yaml_obj[var]},
                             {'out': f'{self.name}.{var}'}
                         ]
-                }, init_pipeline=True)
+                    },
+                    init_pipeline=True,
+                    silent=silent,
+                )
 
 
 yaml_namespace: Dict[str, YamlObject] = {}

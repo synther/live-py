@@ -12,6 +12,7 @@ from . import device_control_events, yaml_namespace, yaml_pipelines
 from .beat_scheduler import BeatScheduler, beats, ticks_per_beat
 from .yaml_namespace import YamlObject
 
+
 logger = logging.getLogger(__name__)
 
 
@@ -92,9 +93,37 @@ class Clock(YamlObject):
         beat_scheduler = Clock.beat_scheduler
         assert beat_scheduler is not None
         self._beat_scheduler = beat_scheduler
-        super().__init__(yaml_obj, ['tempo', 'shuffle'])
+        super().__init__(yaml_obj, ['tempo', 'shuffle', '!clock_out'])
         self._started_ticks: Optional[int] = None
         self._beats_in_measure = 4
+
+        reactivex.timer(
+            duetime=0,
+            period=ticks_per_beat / 24,
+            scheduler=self._beat_scheduler
+        ).subscribe(
+            on_next=lambda x: self.var_subjects['clock_out'].on_next(
+                device_control_events.MidiClockEvent(control=None, midi_device=None)
+            )
+        )
+
+        reactivex.timer(
+            duetime=0,
+            period=ticks_per_beat,
+            scheduler=self._beat_scheduler
+        ).subscribe(
+            on_next=lambda x: logger.debug(f'Beat')
+        )
+
+        self.var_subjects['shuffle'].subscribe(
+            on_next=lambda v: logger.info(f'Changing shuffle = {v}')
+        )
+
+        self.var_subjects['tempo'].subscribe(on_next=self.on_tempo)
+
+    def on_tempo(self, tempo):
+        logger.info(f'Tempo changed {tempo}')
+        self._beat_scheduler.change_ticks_resolution_bpm(tempo)
 
     def start(self):
         logger.info(f'Clock "{self.name}" started')
@@ -203,17 +232,29 @@ class Sequencer(YamlObject):
             if self._playing_subscription is not None:
                 self._playing_subscription.dispose()
 
-            self._playing_subscription = reactivex.from_list(self._record).pipe(
-                reactivex.operators.delay_with_mapper(
-                    lambda e: reactivex.timer(beats(e[0])),
-                ),
-                reactivex.operators.do_action(
-                    on_next=lambda e: logger.info(f'Sequencer out event: {e}')
+            now_ticks = self._beat_scheduler.now
+            current_beat = now_ticks // ticks_per_beat
+            quantized_beats = (current_beat // 4 + 1) * 4
+            delay_ticks = quantized_beats * ticks_per_beat - now_ticks
+
+            logger.debug(f'{now_ticks=}, {current_beat=}, {quantized_beats=}, {delay_ticks=}')
+
+            def start_playback(scheduler: reactivex.abc.SchedulerBase, state):
+                self._playing_subscription = reactivex.from_list(self._record).pipe(
+                    reactivex.operators.delay_with_mapper(
+                        lambda e: reactivex.timer(beats(e[0])),
+                    ),
+                    reactivex.operators.do_action(
+                        on_next=lambda e: logger.info(f'Sequencer out event: {e}')
+                    )
+                ).subscribe(
+                    on_next=lambda e: self.var_subjects['events_out'].on_next(e[1]),
+                    scheduler=self._beat_scheduler,
                 )
-            ).subscribe(
-                on_next=lambda e: self.var_subjects['events_out'].on_next(e[1]),
-                scheduler=self._beat_scheduler,
-            )
+
+            quantized_ticks = quantized_beats * ticks_per_beat
+            self._beat_scheduler.schedule_absolute(quantized_beats * ticks_per_beat, start_playback)
+            logger.debug(f'{now_ticks=} ({current_beat=}), {quantized_beats=} ({quantized_ticks=})')
 
             logger.info(f'After subscribe in playback')
 

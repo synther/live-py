@@ -134,18 +134,11 @@ with ExitStack() as open_mido_devices:
 
     yaml_namespace.get_obj('clock').start()
 
-    yaml_namespace.get_obj('clock').var_subjects['tempo'].subscribe(
-        on_next=lambda v: logger.info(f'Changing BPM = {v}')
-    )
-    yaml_namespace.get_obj('clock').var_subjects['shuffle'].subscribe(
-        on_next=lambda v: logger.info(f'Changing shuffle = {v}')
-    )
-
     yaml_device_controls.setup_output()
 
     for pipeline in yaml_pipelines.pipelines:
         pipeline.obs.subscribe(
-            on_next=lambda v, pipe=pipeline.repr: logger.debug(f'pipeline {pipe} on_next: {v}'),
+            # on_next=lambda v, pipe=pipeline.repr: logger.debug(f'pipeline {pipe} on_next: {v}'),
             on_completed=lambda pipe=pipeline.repr: logger.debug(f'pipeline {pipe} on_completed'),
             on_error=lambda e: logger.error(f'Pipeline error {e}'))
 

@@ -1,5 +1,8 @@
 - device: launch_control
   controls:
+    - midi_device: launch_control_device
+      output: Launch Control
+
     - midi_note:
       id: 1
       input: Launch Control
@@ -154,6 +157,14 @@
 - sequencer: seq1
   is_recording: False
   record_exists: False
+
+- pipeline:
+  silent: True
+  pipe:
+    - map: clock.clock_out
+      vars:
+        clock.clock_out: rx
+    - out: launch_control_device.events_out
 
 - pipeline:
   pipe:

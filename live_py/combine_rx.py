@@ -8,8 +8,11 @@ import logging
 logger = logging.getLogger(__name__)
 
 
-def combine_rx(sources: List[Observable[Any]], is_rx: List[bool],
-               from_: List[Union[str, tuple[str, str]]]) -> Observable[Tuple[Any, ...]]:
+def combine_rx(sources: List[Observable[Any]],
+               is_rx: List[bool],
+               from_: List[Union[str, tuple[str, str]]],
+               silent: bool = False,
+               ) -> Observable[Tuple[Any, ...]]:
     parent = sources[0]
     assert len(sources) == len(is_rx)
 
@@ -31,14 +34,18 @@ def combine_rx(sources: List[Observable[Any]], is_rx: List[bool],
             has_value[i] = True
             nonlocal first_time_all
 
-            logger.debug(
-                f'combine_rx on_next: values {values}, has_value {has_value}, from {from_}')
-            logger.debug(f'                    from "{from_[i]}" = {values[i]} (is_rx={is_rx[i]})')
+            if not silent:
+                logger.debug(
+                    f'combine_rx on_next: values {values}, has_value {has_value}, from {from_}')
+                logger.debug(
+                    f'                    from "{from_[i]}" = {values[i]} (is_rx={is_rx[i]})')
 
             if all(has_value):
                 if first_time_all or is_rx[i]:
-                    logger.debug(
-                        f'combine_rx: pass to observer {first_time_all=}, {is_rx=}, {values=}')
+                    if not silent:
+                        logger.debug(
+                            f'combine_rx: pass to observer {first_time_all=}, {is_rx=}, {values=}')
+
                     res = tuple(values)
                     first_time_all = False
                     observer.on_next(res)

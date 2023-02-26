@@ -26,13 +26,13 @@ def get_var_subject(var_name: tuple[str, str]) -> Optional[reactivex.Subject]:
     return var_out_subjects.get(var_name, None)
 
 
-def create_pipeline(yaml_obj, init_pipeline=False):
-    pipeline = Pipeline(yaml_obj, var_out_subjects)
+def create_pipeline(yaml_obj, init_pipeline=False, silent=False):
+    pipeline = Pipeline(yaml_obj, var_out_subjects, silent)
 
     if init_pipeline:
         pipelines.append(pipeline)
     else:
-        pipelines.insert(0, Pipeline(yaml_obj, var_out_subjects))
+        pipelines.insert(0, Pipeline(yaml_obj, var_out_subjects, silent))
 
 
 T_VAR_NAME = Union[str, tuple[str, str]]
@@ -47,12 +47,20 @@ def str_to_var_name(var_name_str: str) -> T_VAR_NAME:
 
 
 class Pipeline:
-    def __init__(self, yaml_obj: dict, var_subjects: Dict[tuple[str, str], reactivex.Subject[Any]]) -> None:
+    def __init__(self,
+                 yaml_obj: dict,
+                 var_subjects: Dict[tuple[str, str], reactivex.Subject[Any]],
+                 silent: bool = False,
+                 ) -> None:
         logger.debug(f'Create Pipeline from: \n{pprint.pformat(yaml_obj)}')
         self.obs = None
         self.repr = ""
         self._repr_parts = []
         self._var_subjects = var_subjects
+        self._silent = silent
+
+        if 'silent' in yaml_obj:
+            self._silent = yaml_obj['silent']
 
         for pipe_element in yaml_obj['pipe']:
             self._create_pipe_element(pipe_element)
@@ -127,7 +135,8 @@ class Pipeline:
         self.obs = combine_rx(
             list(map(get_obs, in_var_names)),
             [rx_type == 'rx' for rx_type in in_vars.values()],
-            in_var_names
+            in_var_names,
+            silent=self._silent,
         )
 
         return in_var_names
@@ -156,7 +165,8 @@ class Pipeline:
 
             result = eval(var_fn, ns)
 
-            logger.debug(f"Run exec. f() = {in_var_fn} = {result}")
+            if not self._silent:
+                logger.debug(f"Run exec. f() = {in_var_fn} = {result}")
 
             return result
 

@@ -61,7 +61,7 @@ class BeatScheduledItem(object):
             return NotImplemented
 
 
-ticks_per_beat = 1000  # about 0.5 ms tick resolution
+ticks_per_beat = 1008  # about 0.5 ms tick resolution
 
 
 def bpm_to_tick_duration_usec(bpm: float) -> int:
@@ -287,7 +287,7 @@ class BeatScheduler(PeriodicScheduler, abc.DisposableBase):
                     item = self._queue.peek()
                     seconds = (item.duetime_ticks - time_ticks) * self._tick_duration_usec / 1000000
                     if seconds > 0:
-                        logger.debug("timeout: %s", seconds)
+                        # logger.debug("timeout: %s", seconds)
                         self._condition.wait(seconds)
 
                 elif self._exit_if_empty:

@@ -1,6 +1,6 @@
-import abc
 import dataclasses
 import logging
+from functools import partial
 from typing import ClassVar, Optional, Tuple
 
 import mido
@@ -8,14 +8,16 @@ import mido
 from . import device_control_events, yaml_namespace
 from .base import DeviceControl, DeviceControlEvent
 from .device_control_events import (DeviceControlEvent,
-                                    MidiChannelControlEvent, MidiControlEvent,
+                                    MidiChannelControlEvent, MidiClockEvent,
+                                    MidiControlEvent,
                                     MidiNoteOffDeviceControlEvent,
                                     MidiNoteOnDeviceControlEvent)
 
 logger = logging.getLogger(__name__)
 
 
-class MidiDeviceControl(DeviceControl, abc.ABC):
+class MidiDeviceControl(DeviceControl):
+    yaml_type = 'midi_device'
     mido_msg_type: ClassVar[Tuple[str, ...]]
     midi_input: Optional[str]
     midi_output: Optional[str]
@@ -26,16 +28,15 @@ class MidiDeviceControl(DeviceControl, abc.ABC):
         self.midi_output = yaml_obj.get('output', None)
         # TODO rename "input" to "midi_device" or add "output"
 
-    @abc.abstractmethod
     def midi_to_device_event(self, msg, device_name: str) -> Optional[DeviceControlEvent]:
-        ...
+        return None
 
-    @abc.abstractmethod
     def match_mido_msg(self, msg) -> bool:
-        ...
+        return False
 
     def send(self, msg: MidiControlEvent):
-        logger.debug(f'Sending {msg} to {self}')
+        if not isinstance(msg, MidiClockEvent):
+            logger.debug(f'Sending {msg} to {self}')
 
         if self.midi_output:
             msg.midi_device = self.midi_output
@@ -223,6 +224,9 @@ yaml_namespace.register_class(MidiNoteDeviceControl.yaml_type,
 yaml_namespace.register_class(MidiCcDeviceControl.yaml_type,
                               MidiCcDeviceControl)
 
+yaml_namespace.register_class(MidiDeviceControl.yaml_type,
+                              MidiDeviceControl)
+
 
 def publish_event_to_subject(event: DeviceControlEvent):
     control = event.control
@@ -258,6 +262,8 @@ def send_midi(msg: device_control_events.DeviceControlEvent):
             control=msg.cc,
             value=msg.value,
         )
+    elif isinstance(msg, device_control_events.MidiClockEvent):
+        mido_msg = mido.Message('clock')
     else:
         logger.warning(f'Unsupported {msg} ({type(msg)}) to send to MIDI')
         return
@@ -265,7 +271,9 @@ def send_midi(msg: device_control_events.DeviceControlEvent):
     mido_port = mido_outputs.get(msg.midi_device, None)
 
     if mido_port:
-        logger.info(f'Send mido {mido_msg} to "{msg.midi_device}"')
+        if not isinstance(msg, device_control_events.MidiClockEvent):
+            logger.info(f'Send mido {mido_msg} to "{msg.midi_device}"')
+
         mido_port.send(mido_msg)
     else:
         logger.warning(f'Unknown MIDI output in event {msg}')
@@ -284,13 +292,17 @@ def open_output_midi_devices():
         mido_outputs[midi_output] = mido.open_output(midi_output)
 
 
-def on_events_out(msg: DeviceControlEvent):
-    logger.info(f"Send MIDI event {msg}")
-    send_midi(msg)
+def on_events_out(msg: DeviceControlEvent, midi_device_control: MidiDeviceControl):
+    if not isinstance(msg, MidiControlEvent):
+        logger.info(f"Send MIDI event {msg}, {midi_device_control=}")
+
+    if isinstance(msg, MidiControlEvent):
+        midi_device_control.send(msg)
 
 
 def setup_output():
     for midi_device_control in yaml_namespace.find_by_class(MidiDeviceControl):
         if midi_device_control.midi_output is not None:
             logger.debug(f'Subscribe to "{midi_device_control.name}" events_out subject')
-            midi_device_control.var_subjects['events_out'].subscribe(on_next=on_events_out)
+            midi_device_control.var_subjects['events_out'].subscribe(
+                on_next=partial(on_events_out, midi_device_control=midi_device_control))
