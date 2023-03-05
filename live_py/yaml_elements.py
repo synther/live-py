@@ -1,3 +1,4 @@
+import dataclasses
 import logging
 import pprint
 from typing import Iterable, List, Optional, Tuple
@@ -11,7 +12,6 @@ from live_py.base import DeviceControlEvent
 from . import device_control_events, yaml_namespace, yaml_pipelines
 from .beat_scheduler import BeatScheduler, beats, ticks_per_beat
 from .yaml_namespace import YamlObject
-
 
 logger = logging.getLogger(__name__)
 
@@ -126,7 +126,7 @@ class Clock(YamlObject):
             period=ticks_per_beat,
             scheduler=self._beat_scheduler
         ).subscribe(
-            on_next=lambda x: logger.debug('Beat Bar' if x % 4 == 0 else 'Beat')
+            on_next=lambda x: logger.debug(f'Beat {x} Bar' if x % 4 == 0 else f'Beat {x}')
         )
 
         self.var_subjects['transport_out'].on_next(
@@ -166,6 +166,16 @@ class Clock(YamlObject):
         now_beats = (now_ticks - self._started_ticks) / ticks_per_beat
 
         return now_beats
+
+    @property
+    def now_ticks(self) -> int:
+        assert self._started_ticks is not None
+        now_ticks = self._beat_scheduler.now
+        return now_ticks - self._started_ticks
+
+    def to_scheduler_ticks(self, clock_ticks: int) -> int:
+        assert self._started_ticks is not None
+        return clock_ticks + self._started_ticks
 
 
 class Sequencer(YamlObject):
@@ -209,6 +219,9 @@ class Sequencer(YamlObject):
         self._record: list[tuple[float, DeviceControlEvent]] = []
         """Format: beat, event"""
 
+        self._noteon_before_start = False
+        """Whether there is a note_on event triggered before clip recording started"""
+
         self._playing_subscription: Optional[reactivex.abc.DisposableBase] = None
 
     def on_recording_control(self, e):
@@ -216,15 +229,43 @@ class Sequencer(YamlObject):
 
         if e == True:
             logger.info(f'Start recording on "{self.name}"')
-            self._recording_started_beats = self._clock.now_beats
-            self._record = []
-            self.var_subjects['is_recording'].on_next(True)
-            self.var_subjects['record_exists'].on_next(True)
+
+            def start_recording(scheduler: reactivex.abc.SchedulerBase, state):
+                logger.info('Recording started after quantization')
+
+                self._recording_started_beats = self._clock.now_beats
+                self._record = []
+                self._noteon_before_start = True
+                self.var_subjects['is_recording'].on_next(True)
+                self.var_subjects['record_exists'].on_next(True)
+
+            self._schedule_quantized(start_recording)
         elif e == False:
             logger.info(
                 f'Stop recording on "{self.name}". Recorded seq = {pprint.pformat(self._record)}')
-            self._recording_started_beats = None
-            self.var_subjects['is_recording'].on_next(False)
+
+            def stop_recording(scheduler: reactivex.abc.SchedulerBase, state):
+                logger.info('Recording stopped after quantization')
+
+                self._recording_started_beats = None
+                self.var_subjects['is_recording'].on_next(False)
+
+            self._schedule_quantized(stop_recording)
+
+    def _schedule_quantized(self, fn):
+        logger.debug('Schedule fn quantized to bar')
+
+        now_ticks = self._clock.now_ticks
+        current_beat = now_ticks // ticks_per_beat
+        quantized_beats = (current_beat // 4 + 1) * 4
+        quantized_ticks = quantized_beats * ticks_per_beat
+
+        self._beat_scheduler.schedule_absolute(
+            self._clock.to_scheduler_ticks(quantized_ticks), fn)
+
+        logger.debug(
+            f'{now_ticks=}, {current_beat=}, {quantized_beats=},  {quantized_ticks=}'
+        )
 
     def on_playback_control(self, e):
         logger.info(f"on_playback_control, {e=}")
@@ -235,13 +276,6 @@ class Sequencer(YamlObject):
 
             if self._playing_subscription is not None:
                 self._playing_subscription.dispose()
-
-            now_ticks = self._beat_scheduler.now
-            current_beat = now_ticks // ticks_per_beat
-            quantized_beats = (current_beat // 4 + 1) * 4
-            delay_ticks = quantized_beats * ticks_per_beat - now_ticks
-
-            logger.debug(f'{now_ticks=}, {current_beat=}, {quantized_beats=}, {delay_ticks=}')
 
             def start_playback(scheduler: reactivex.abc.SchedulerBase, state):
                 logger.info(f'Start playback quantized on "{self.name}"')
@@ -258,9 +292,7 @@ class Sequencer(YamlObject):
                     scheduler=self._beat_scheduler,
                 )
 
-            quantized_ticks = quantized_beats * ticks_per_beat
-            self._beat_scheduler.schedule_absolute(quantized_beats * ticks_per_beat, start_playback)
-            logger.debug(f'{now_ticks=} ({current_beat=}), {quantized_beats=} ({quantized_ticks=})')
+            self._schedule_quantized(start_playback)
 
             logger.info(f'Start playback command on "{self.name}"...done')
 
@@ -272,15 +304,43 @@ class Sequencer(YamlObject):
                 self._playing_subscription.dispose()
                 self._playing_subscription = None
 
-    def on_events_in(self, e):
+    def _record_event(self, time_beats: float, e: DeviceControlEvent):
+        rec = (time_beats, e)
+        logger.info(f"Record {rec} on {self.name}")
+        self._record.append(rec)
+
+    def _compensate_first_note_on(self, e: DeviceControlEvent):
+        if not self._noteon_before_start:
+            return
+
+        if isinstance(e, device_control_events.MidiNoteOnDeviceControlEvent):
+            self._noteon_before_start = False
+            return
+
+        if isinstance(e, device_control_events.MidiNoteOffDeviceControlEvent) \
+                and self._noteon_before_start:
+
+            note_on = device_control_events.MidiNoteOnDeviceControlEvent(
+                control=e.control,
+                midi_device=e.midi_device,
+                channel=e.channel,
+                velocity=e.velocity,
+                note=e.note,
+            )
+
+            logger.debug(
+                f"Note {e} was triggered before clip started. Record {note_on} at the clip's start")
+
+            self._record_event(0, note_on)
+
+            self._noteon_before_start = False
+
+    def on_events_in(self, e: DeviceControlEvent):
         logger.info(f"Seq: on_events_in, {e=}")
 
         if self._recording_started_beats is not None:
-            rec = (self._clock.now_beats - self._recording_started_beats, e)
-
-            logger.info(f"Record {rec} on {self.name}")
-
-            self._record.append(rec)
+            self._compensate_first_note_on(e)
+            self._record_event(self._clock.now_beats - self._recording_started_beats, e)
 
 
 def get_widgets_in_page(page: str) -> Iterable[WidgetControl]:
