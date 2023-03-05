@@ -56,7 +56,7 @@ class MidiChannelDeviceControl(MidiDeviceControl):
         self.midi_channel = yaml_obj['channel']
 
     def __repr__(self) -> str:
-        return f'{self.__class__.__name__}({self.yaml_type=}, {self.midi_channel=}, {self.midi_input=})'
+        return f'{self.__class__.__name__}(name={self.name}, id={self.control_id}, {self.yaml_type=}, {self.midi_channel=}, {self.midi_input=})'
 
     def send(self, msg: MidiChannelControlEvent):
         logger.debug(f'Sending {msg} to {self}')
@@ -64,6 +64,8 @@ class MidiChannelDeviceControl(MidiDeviceControl):
         super().send(msg)
 
     def midi_to_device_event(self, msg, device_name: str) -> Optional[DeviceControlEvent]:
+        logger.debug(f'mido_to_device_event, MidiChannelDeviceControl')
+
         match msg.type:
             case 'note_on':
                 return device_control_events.MidiNoteOnDeviceControlEvent(
@@ -99,7 +101,6 @@ class MidiChannelDeviceControl(MidiDeviceControl):
             msg.channel == self.midi_channel
 
 
-@dataclasses.dataclass
 class MidiNoteOnDeviceControl(MidiChannelDeviceControl):
     yaml_type = 'midi_note_on'
     mido_msg_type = ('note_on',)
@@ -130,7 +131,6 @@ class MidiNoteOnDeviceControl(MidiChannelDeviceControl):
             msg.note == self.midi_note
 
 
-@dataclasses.dataclass
 class MidiNoteOffDeviceControl(MidiChannelDeviceControl):
     yaml_type = 'midi_note_off'
     mido_msg_type = ('note_off',)
@@ -156,7 +156,6 @@ class MidiNoteOffDeviceControl(MidiChannelDeviceControl):
             msg.note == self.midi_note
 
 
-@dataclasses.dataclass
 class MidiNoteDeviceControl(MidiChannelDeviceControl):
     yaml_type = 'midi_note'
     mido_msg_type = ('note_on', 'note_off')
@@ -183,7 +182,6 @@ class MidiNoteDeviceControl(MidiChannelDeviceControl):
             msg.note == self.midi_note
 
 
-@dataclasses.dataclass
 class MidiCcDeviceControl(MidiChannelDeviceControl):
     yaml_type = 'midi_cc'
     mido_msg_type = ('control_change', )
@@ -264,6 +262,10 @@ def send_midi(msg: device_control_events.DeviceControlEvent):
         )
     elif isinstance(msg, device_control_events.MidiClockEvent):
         mido_msg = mido.Message('clock')
+    elif isinstance(msg, device_control_events.MidiStartEvent):
+        mido_msg = mido.Message('start')
+    elif isinstance(msg, device_control_events.MidiStopEvent):
+        mido_msg = mido.Message('stop')
     else:
         logger.warning(f'Unsupported {msg} ({type(msg)}) to send to MIDI')
         return

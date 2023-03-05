@@ -4,18 +4,24 @@ from typing import ClassVar, List, Optional
 from . import yaml_namespace
 from .yaml_namespace import YamlObject
 
+import logging
+logger = logging.getLogger(__name__)
+
 
 class Device(YamlObject):
-    controls: List["DeviceControl"] = []
 
     def __init__(self, yaml_obj: dict):
         super().__init__(yaml_obj, [])
+        self.controls: List["DeviceControl"] = []
+
+        logger.debug(f'New device {self.name}')
 
         for yaml_control in yaml_obj['controls']:
             control = yaml_namespace.new_obj(yaml_control)
 
             if control:
                 assert isinstance(control, DeviceControl)
+                logger.debug(f'  Add {control=}')
                 control.device = self
                 self.controls.append(control)
 

@@ -38,6 +38,21 @@
       output: Launch Control
       channel: 2
 
+- device: gear
+  controls:
+    - midi_channel: keystep_notes
+      input: ESI M4U Port 1
+      channel: 0
+
+    - midi_device: tr_6s
+      output: ESI M4U Port 1
+
+    - midi_device: keystep
+      output: ESI M4U Port 2
+
+    - midi_device: neutron
+      output: ESI M4U Port 3
+
 - page: main
   active: true
   widgets:
@@ -164,13 +179,23 @@
     - map: clock.clock_out
       vars:
         clock.clock_out: rx
-    - out: launch_control_device.events_out
+    - out: tr_6s.events_out
+    - out: neutron.events_out
+    - out: keystep.events_out
 
 - pipeline:
   pipe:
-    - map: launch_control_pads.events_in
+    - map: clock.transport_out
       vars:
-        launch_control_pads.events_in: rx
+        clock.transport_out: rx
+    - out: tr_6s.events_out
+
+- pipeline:
+  pipe:
+    - map: keystep_notes.events_in
+      vars:
+        keystep_notes.events_in: rx
+    - out: neutron.events_out
     - out: seq1.events_in
 
 - pipeline:
@@ -178,7 +203,7 @@
     - map: seq1.events_out
       vars:
         seq1.events_out: rx
-    - out: launch_control_pads.events_out
+    - out: neutron.events_out
 
 - pipeline:
   pipe:

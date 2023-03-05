@@ -16,6 +16,7 @@ from reactivex import operators as ops
 from live_py import (yaml_device_controls, yaml_devices, yaml_elements,
                      yaml_namespace, yaml_pipelines)
 from live_py.activity_manager import activity_manager
+from live_py.yaml_pipelines import Pipeline
 
 from .beat_scheduler import BeatScheduler
 
@@ -53,17 +54,18 @@ def load_yaml(yaml_path: str):
 
 
 def on_midi_in(msg, device_name):
-    logger.debug(f'mido msg from "{device_name}: {msg}')
+    if msg.type != 'clock':
+        logger.debug(f'mido msg from "{device_name}: {msg}')
 
     if msg.type in ('note_on', 'note_off'):
         midi_in_subj.on_next((device_name, msg))
 
 
 def midi_in_to_device_event(device_name, mido_msg):
+    controls = yaml_devices.find_controls_by_mido_msg(device_name, mido_msg)
+
     device_control_events = [
-        control.midi_to_device_event(mido_msg, device_name) for control in yaml_devices.find_controls_by_mido_msg(
-            device_name, mido_msg
-        )
+        control.midi_to_device_event(mido_msg, device_name) for control in controls
     ]
 
     logger.debug(f"Converted device control events, {mido_msg=}, {device_control_events=}")
@@ -93,6 +95,7 @@ yaml_elements.Sequencer.beat_scheduler = beat_scheduler
 load_yaml('set.yaml')
 midi_in_subj = Subject()
 logger.info(f'MIDI inputs: {mido.get_input_names()}')
+logger.info(f'MIDI output: {mido.get_output_names()}')
 
 with ExitStack() as open_mido_devices:
     for midi_input in yaml_devices.find_midi_inputs():
@@ -132,15 +135,20 @@ with ExitStack() as open_mido_devices:
         ),
     ).subscribe()
 
-    yaml_namespace.get_obj('clock').start()
 
     yaml_device_controls.setup_output()
 
+    def print_pipeline(pipeline: Pipeline, value):
+        if not pipeline._silent:
+            logger.debug(f'Pipeline finished {pipeline.repr}: {value}')
+
     for pipeline in yaml_pipelines.pipelines:
         pipeline.obs.subscribe(
-            # on_next=lambda v, pipe=pipeline.repr: logger.debug(f'pipeline {pipe} on_next: {v}'),
-            on_completed=lambda pipe=pipeline.repr: logger.debug(f'pipeline {pipe} on_completed'),
+            on_next=lambda v, p=pipeline: print_pipeline(p, v),
+            on_completed=lambda pipe=pipeline: logger.debug(f'pipeline {pipe.repr} on_completed'),
             on_error=lambda e: logger.error(f'Pipeline error {e}'))
+
+    yaml_namespace.get_obj('clock').start()
 
     def signal_handler(signal_number, frame):
         quit_event.set()

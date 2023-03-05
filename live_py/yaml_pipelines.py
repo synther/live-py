@@ -102,7 +102,7 @@ class Pipeline:
                 assert self.obs
 
                 self.obs = self.obs.pipe(ops.do_action(
-                    on_next=lambda v: self._var_subjects[out_var].on_next(v)))
+                    on_next=lambda v: self._out_fn(out_var, v)))
 
             case {'one_shot': value}:
                 logger.debug(f"One shot value: {value}")
@@ -111,6 +111,12 @@ class Pipeline:
                 assert not self.obs
 
                 self.obs = reactivex.of(value)
+
+    def _out_fn(self, var_name: T_VAR_NAME, value):
+        if not self._silent:
+            logger.debug(f'Send to subject: "{value}" -> {var_name}')
+
+        self._var_subjects[var_name].on_next(value)
 
     def _parse_input_var_names(self, in_vars: Dict[str, str]) -> List[T_VAR_NAME]:
         return list(map(str_to_var_name, in_vars.keys()))

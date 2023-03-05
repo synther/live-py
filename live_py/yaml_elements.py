@@ -93,9 +93,23 @@ class Clock(YamlObject):
         beat_scheduler = Clock.beat_scheduler
         assert beat_scheduler is not None
         self._beat_scheduler = beat_scheduler
-        super().__init__(yaml_obj, ['tempo', 'shuffle', '!clock_out'])
+        super().__init__(yaml_obj, ['tempo', 'shuffle', '!clock_out', 'transport_out'])
         self._started_ticks: Optional[int] = None
         self._beats_in_measure = 4
+
+        self.var_subjects['shuffle'].subscribe(
+            on_next=lambda v: logger.info(f'Changing shuffle = {v}')
+        )
+
+        self.var_subjects['tempo'].subscribe(on_next=self.on_tempo)
+
+    def on_tempo(self, tempo):
+        logger.info(f'Tempo changed {tempo}')
+        self._beat_scheduler.change_ticks_resolution_bpm(tempo)
+
+    def start(self):
+        logger.info(f'Clock "{self.name}" started')
+        self._started_ticks = self._beat_scheduler.now
 
         reactivex.timer(
             duetime=0,
@@ -112,22 +126,12 @@ class Clock(YamlObject):
             period=ticks_per_beat,
             scheduler=self._beat_scheduler
         ).subscribe(
-            on_next=lambda x: logger.debug(f'Beat')
+            on_next=lambda x: logger.debug('Beat Bar' if x % 4 == 0 else 'Beat')
         )
 
-        self.var_subjects['shuffle'].subscribe(
-            on_next=lambda v: logger.info(f'Changing shuffle = {v}')
+        self.var_subjects['transport_out'].on_next(
+            device_control_events.MidiStartEvent(control=None, midi_device=None)
         )
-
-        self.var_subjects['tempo'].subscribe(on_next=self.on_tempo)
-
-    def on_tempo(self, tempo):
-        logger.info(f'Tempo changed {tempo}')
-        self._beat_scheduler.change_ticks_resolution_bpm(tempo)
-
-    def start(self):
-        logger.info(f'Clock "{self.name}" started')
-        self._started_ticks = self._beat_scheduler.now
 
     def stop(self):
         logger.info(f'Clock "{self.name}" stopped')
@@ -226,7 +230,7 @@ class Sequencer(YamlObject):
         logger.info(f"on_playback_control, {e=}")
 
         if e == True:
-            logger.info(f'Start playback on "{self.name}"')
+            logger.info(f'Start playback command on "{self.name}"...')
             self.var_subjects['is_playing'].on_next(True)
 
             if self._playing_subscription is not None:
@@ -240,6 +244,8 @@ class Sequencer(YamlObject):
             logger.debug(f'{now_ticks=}, {current_beat=}, {quantized_beats=}, {delay_ticks=}')
 
             def start_playback(scheduler: reactivex.abc.SchedulerBase, state):
+                logger.info(f'Start playback quantized on "{self.name}"')
+
                 self._playing_subscription = reactivex.from_list(self._record).pipe(
                     reactivex.operators.delay_with_mapper(
                         lambda e: reactivex.timer(beats(e[0])),
@@ -256,7 +262,7 @@ class Sequencer(YamlObject):
             self._beat_scheduler.schedule_absolute(quantized_beats * ticks_per_beat, start_playback)
             logger.debug(f'{now_ticks=} ({current_beat=}), {quantized_beats=} ({quantized_ticks=})')
 
-            logger.info(f'After subscribe in playback')
+            logger.info(f'Start playback command on "{self.name}"...done')
 
         elif e == False:
             logger.info(f'Stop playback on "{self.name}"')
