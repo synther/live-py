@@ -127,3 +127,8 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+.vscode/settings.json
+
+live_py/old/
+set-pipelines.py
